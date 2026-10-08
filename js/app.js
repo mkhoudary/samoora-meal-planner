@@ -102,6 +102,18 @@ function todayPlan() {
   return state.plans.find((plan) => plan.date === todayKey() && plan.confirmedAt) || null;
 }
 
+function anyRated(plan) {
+  return Boolean(plan?.ratings?.lunch?.overall || plan?.ratings?.dinner?.overall);
+}
+
+function fullyRated(plan) {
+  return Boolean(plan?.ratings?.lunch?.overall && plan?.ratings?.dinner?.overall);
+}
+
+function dayClosed(plan) {
+  return Boolean(plan && (plan.finishedAt || fullyRated(plan)));
+}
+
 function confirmedPlans() {
   return state.plans
     .filter((plan) => plan.confirmedAt)
@@ -817,21 +829,23 @@ function renderHome() {
   const plan = todayPlan();
   const lunch = plan ? findMeal(plan.lunchId) : null;
   const dinner = plan ? findMeal(plan.dinnerId) : null;
+  const closed = dayClosed(plan);
   const waiting = confirmedPlans().filter((item) => item.date !== todayKey() && (!item.ratings?.lunch?.overall || !item.ratings?.dinner?.overall));
-  const needsRating = plan && (!plan.ratings?.lunch?.overall || !plan.ratings?.dinner?.overall);
+  const needsRating = plan && !closed && (!plan.ratings?.lunch?.overall || !plan.ratings?.dinner?.overall);
+  const showMeals = plan && !closed;
   return `${header()}<main class="wrap">
     <p class="quiet">${esc(prettyDate(todayKey()))}</p>
     <h1>${fastingNow ? "You're fasting" : "Home"}</h1>
     ${fastingBlock(status)}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${waiting.length ? `<p class="banner"><button class="ghost" type="button" data-action="history">History</button> is holding meals that still want a rating.</p>` : ""}
-    ${plan ? `${host("thumbs", "<p>This is the day you saved. It stays on this date.</p>")}
+    ${showMeals ? `${host("thumbs", "<p>This is the day you saved. It stays on this date.</p>")}
       <div class="meals">${mealCard(lunch, "Lunch", { rating: plan.ratings?.lunch })}${mealCard(dinner, "Dinner", { rating: plan.ratings?.dinner })}</div>
       <div class="row" style="margin-top:14px">
-        <button class="primary" type="button" data-action="planner" data-scroll="#planner-meals">Change meals</button>
+        ${anyRated(plan) ? "" : `<button class="primary" type="button" data-action="planner" data-scroll="#planner-meals">Change meals</button>`}
         ${needsRating ? `<button class="ghost" type="button" data-action="planner" data-scroll="#day-rating">Rate these meals</button>` : ""}
-      </div>` : `${host("chef", "<p>The day is open. Plan lunch and dinner when you're ready.</p>")}
-      <button class="primary" type="button" data-action="planner">Plan today</button>`}
+      </div>` : `${host(closed ? "thumbs" : "chef", closed ? "<p>This day is saved. It stays in History.</p>" : "<p>The day is open. Plan lunch and dinner when you're ready.</p>")}
+      <button class="primary" type="button" data-action="${plan ? "finish-day" : "planner"}">Start a New Day</button>`}
     ${footer()}</main>`;
 }
 
@@ -856,7 +870,7 @@ function renderPlanner() {
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${state.justConfirmed ? `<p class="banner">Saved for ${esc(prettyDate(todayKey()))}. Rate the meals when you've eaten them, then start a new day.</p>` : ""}
     ${finished ? `<p class="banner">${esc(prettyDate(todayKey()))} keeps this one plan.</p>` : ""}
-    ${locked ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
+    ${locked && !anyRated(saved) ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
     ${state.draft.error ? `<p class="warn" id="form-error">${esc(state.draft.error)}</p>` : ""}
     ${state.draft.relaxed ? `<p class="banner">This is the closest pair I could find. The meter tells the truth.</p>` : ""}
     <div id="plan-meter">${meterHTML(total)}</div>
@@ -874,9 +888,11 @@ function renderPlanner() {
     <div class="row" id="plan-actions" style="margin:14px 0">
       <button class="primary mode" type="button" data-action="surprise" ${locked ? "disabled" : ""}>Surprise Me</button>
       <button class="ghost mode" type="button" data-action="pick-mode" aria-pressed="${state.pickMode && !locked}" ${locked ? "disabled" : ""}>I'll pick</button>
-      ${locked
+      ${locked && !anyRated(saved)
         ? `<button class="ghost" type="button" data-action="unconfirm">Unconfirm</button>`
-        : `<button class="primary" type="button" data-action="confirm" ${ready ? "" : "disabled"}>Confirm</button>`}
+        : locked
+          ? ""
+          : `<button class="primary" type="button" data-action="confirm" ${ready ? "" : "disabled"}>Confirm</button>`}
     </div>
     ${sameMeal ? `<p class="warn">Pick two different meals, sis.</p>` : ""}
     ${state.pickMode && !locked ? `<section class="card" id="pick-panel">
@@ -937,6 +953,7 @@ function themeFor() {
 }
 
 function render() {
+  expireDraft();
   document.body.dataset.theme = themeFor();
   const scrollTo = state.scrollTo;
   state.scrollTo = null;
@@ -977,7 +994,7 @@ function seedOpenNumbers() {
 
 function weightIsDue() {
   const log = state.weightLog;
-  if (!log.length) return false;
+  if (!Array.isArray(log) || !log.length) return false;
   const last = new Date(log[log.length - 1].at).getTime();
   return Date.now() - last >= 7 * 24 * 60 * 60 * 1000;
 }
@@ -1072,6 +1089,7 @@ function onClick(event) {
       render();
     } else {
       state.draft = { lunch: result.lunch, dinner: result.dinner, relaxed: result.relaxed };
+      state.draftDay = todayKey();
       state.pairKey = `${result.lunch.id}-${result.dinner.id}`;
       state.pickMode = false;
       state.justConfirmed = false;
@@ -1092,6 +1110,7 @@ function onClick(event) {
     if (todayPlan()) return;
     const meal = findMeal(Number(button.dataset.id));
     state.draft[button.dataset.slot] = meal;
+    state.draftDay = todayKey();
     state.draft.relaxed = false;
     state.draft.error = "";
     state.justConfirmed = false;
@@ -1255,6 +1274,8 @@ function confirmDay() {
 }
 
 function unconfirmDay() {
+  const plan = todayPlan();
+  if (!plan || anyRated(plan)) return;
   const date = todayKey();
   state.plans = state.plans.filter((plan) => plan.date !== date);
   savePlans(state.plans);
@@ -1354,6 +1375,7 @@ function recentMealIds() {
 function restoreToday() {
   const saved = state.plans.find((plan) => plan.date === todayKey());
   if (!saved) return;
+  state.draftDay = todayKey();
   state.draft = {
     lunch: findMeal(saved.lunchId),
     dinner: findMeal(saved.dinnerId),
@@ -1361,28 +1383,36 @@ function restoreToday() {
   };
 }
 
+function expireDraft() {
+  if (!state.draftDay || state.draftDay === todayKey()) return;
+  state.draft = { lunch: null, dinner: null, relaxed: false, error: "" };
+  state.draftDay = todayKey();
+}
+
 async function boot() {
-  const loaded = loadState();
-  Object.assign(state, loaded);
-  if (!state.presets?.length) state.presets = starterPresets();
-  const savedFasting = state.fasting;
-  state.onboardStep = !state.profile ? 1 : savedFasting ? 3 : 2;
-  if (!state.fasting) state.fasting = { on: true, hours: 16, windowStartsAt: "12:00" };
-  if (state.profile?.heightCm && state.profile?.weightKg) {
-    state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
-    saveProfile(state.profile);
-  }
-  state.plans = dedupePlans(state.plans || []);
-  state.form = formFromProfile(state.profile);
-  state.screen = state.onboarded ? "home" : "onboard";
-  if (state.profile) {
-    clampCalMax();
-    savePresets(state.presets, state.activePresetId);
-  }
-  render();
   try {
+    const loaded = loadState();
+    Object.assign(state, loaded);
+    if (!state.presets?.length) state.presets = starterPresets();
+    const savedFasting = state.fasting;
+    state.onboardStep = !state.profile ? 1 : savedFasting ? 3 : 2;
+    if (!state.fasting) state.fasting = { on: true, hours: 16, windowStartsAt: "12:00" };
+    if (state.profile?.heightCm && state.profile?.weightKg) {
+      state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
+      saveProfile(state.profile);
+    }
+    state.plans = dedupePlans(Array.isArray(state.plans) ? state.plans : []);
+    state.form = formFromProfile(state.profile);
+    state.screen = state.onboarded ? "home" : "onboard";
+    state.scrollTo = "top";
+    if (state.profile) {
+      clampCalMax();
+      savePresets(state.presets, state.activePresetId);
+    }
+    render();
     state.meals = await loadMeals();
     restoreToday();
+    state.scrollTo = "top";
     render();
   } catch (error) {
     state.screen = "error";
