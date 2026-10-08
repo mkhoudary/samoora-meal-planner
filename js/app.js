@@ -31,6 +31,7 @@ import {
   bmiBand,
   cmToFtIn,
   deficitWords,
+  weeklyLossGrams,
   personAge,
   round2,
   clockLabel,
@@ -571,7 +572,8 @@ function pictureBlock() {
   });
   const keep = baseline > 0 ? Math.min(1, target / baseline) : 0;
   const cut = deficitWords(deficit, baseline);
-  const label = shown ? `BMI ${fixed2(shown)}, ${band.name}. Day maximum ${fixed2(target)} calories. Deficit ${cut.name}.` : "Add height and weight.";
+  const grams = weeklyLossGrams(deficit);
+  const label = shown ? `BMI ${fixed2(shown)}, ${band.name}. Day maximum ${fixed2(target)} calories. Deficit ${cut.name}. About ${grams} grams a week.` : "Add height and weight.";
   return `<div class="bmi-board" role="img" aria-label="${esc(label)}">
     <div class="bmi-read"><span class="kicker">BMI</span><strong class="band-${band.id}">${shown ? tickHTML("bmi", shown) : "—"}</strong><em class="band-${band.id}">${band.name}</em></div>
     <div class="bmi-scale">
@@ -584,6 +586,7 @@ function pictureBlock() {
       <div class="energy-fig">${target > 0 ? tickHTML("day-target", target) : "—"}<small>max</small></div>
     </div>
     <div class="energy-notes"><span>${baseline ? tickHTML("baseline", baseline) : "—"} needed</span><span>− ${tickHTML("deficit-show", deficit, 0)} · <em class="cut-${cut.id}">${cut.name}</em></span></div>
+    <p class="week-loss">${grams ? `About ${tickHTML("week-grams", grams, 0)} grams a week.` : "An even cut stays about the same weight this week."}</p>
   </div>`;
 }
 
@@ -1099,7 +1102,8 @@ function remainingParts(mins) {
 
 function clockFace(mins) {
   const { hours, minutes, seconds } = remainingParts(mins);
-  return `<span class="clock-main">${tickHTML("fast-h", hours, 2)}h ${tickHTML("fast-m", minutes, 2)}m</span><span class="clock-seconds">${tickHTML("fast-s", seconds, 0)}s</span>`;
+  const part = (key, value, unit) => `<span class="clock-part">${tickHTML(key, value, 0)}<small>${unit}</small></span>`;
+  return `${part("fast-h", hours, "h")}${part("fast-m", minutes, "m")}${part("fast-s", seconds, "s")}`;
 }
 
 function fastingBlock(status) {

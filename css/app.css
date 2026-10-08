@@ -293,6 +293,12 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
   font-size: 0.85rem;
 }
 
+.week-loss {
+  margin: 10px 0 0;
+  text-align: center;
+  font-weight: 800;
+}
+
 .macro-max {
   display: flex;
   align-items: center;
@@ -501,22 +507,31 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .ring-hole strong {
   font-family: Fraunces, Georgia, serif;
-  font-size: 1.15rem;
+  font-size: 1.45rem;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   line-height: 1;
 }
 
-.clock-main { white-space: nowrap; }
-
-.clock-seconds {
-  font-size: 1.7rem;
+.clock-part {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 3px;
+  min-width: 4.6ch;
   font-variant-numeric: tabular-nums;
 }
 
-.clock-seconds .tick {
+.clock-part small {
+  font-family: Nunito, sans-serif;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.clock-part .tick {
   min-width: 2ch;
   text-align: right;
 }

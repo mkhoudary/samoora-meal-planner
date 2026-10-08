@@ -73,6 +73,11 @@ export function bmiBand(value) {
   return { id: "obese", name: "Obese" };
 }
 
+export function weeklyLossGrams(deficit) {
+  const cut = Math.max(0, Math.round(Number(deficit) || 0));
+  return Math.round(cut * 7 * 1000 / 7700);
+}
+
 export function deficitWords(deficit, baseline) {
   const cut = Math.max(0, Math.round(Number(deficit) || 0));
   if (!cut) return { id: "even", name: "Even" };
