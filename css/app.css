@@ -332,6 +332,25 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
 
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 
+.symbol-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.symbol-row .mark {
+  width: 1.8rem;
+  font-size: 1.8rem;
+  line-height: 1;
+  text-align: center;
+  color: var(--muted);
+}
+
+.symbol-row .mark.on { color: var(--accent); }
+
+#activityNote { margin: 0; }
+
 .duo-read {
   display: flex;
   align-items: baseline;

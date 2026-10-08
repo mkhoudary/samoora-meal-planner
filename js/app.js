@@ -24,11 +24,14 @@ import {
 import { idiomFor } from "./idioms.js";
 import { playTicks, seedTick, tickHTML, writeTick } from "./tick.js";
 import {
+  ACTIVITY,
+  activityIndex,
   baselineCalories,
   bmi,
   bmiBand,
   cmToFtIn,
   deficitWords,
+  personAge,
   round2,
   clockLabel,
   formatWeight,
@@ -224,14 +227,23 @@ function formFromProfile(profile) {
   const bounds = weightBounds(unit);
   const height = heightBounds(unit);
   const weight = Math.min(bounds.max, Math.max(bounds.min, tenth(unit === "lb" ? kgToLb(weightKg) : weightKg)));
+  const person = {
+    gender: profile?.gender === "male" ? "male" : "female",
+    activity: activityIndex(profile?.activity),
+    age: personAge(profile?.age),
+  };
+  const calories = baselineCalories(weightKg, heightCm, person);
   return {
     unit,
     feet: Math.min(height.feet?.[1] ?? imperial.feet, Math.max(height.feet?.[0] ?? imperial.feet, profile ? imperial.feet : 5)),
     inches: Math.min(11, Math.max(0, profile ? imperial.inches : 5)),
     cm: Math.min(height.cm?.[1] ?? 200, Math.max(height.cm?.[0] ?? 140, Math.round(heightCm))),
     weight,
-    calories: baselineCalories(weightKg, heightCm),
-    deficit: snapDeficit(profile?.deficit ?? 300, baselineCalories(weightKg, heightCm)),
+    gender: person.gender === "male" ? 1 : 0,
+    activity: person.activity,
+    age: person.age,
+    calories,
+    deficit: snapDeficit(profile?.deficit ?? 300, calories),
   };
 }
 
@@ -241,12 +253,21 @@ function profileFromForm() {
     ? Number(state.form.cm)
     : ftInToCm(state.form.feet, state.form.inches);
   const weightKg = unit === "kg" ? Number(state.form.weight) : lbToKg(state.form.weight);
+  const person = {
+    gender: state.form.gender ? "male" : "female",
+    activity: activityIndex(state.form.activity),
+    age: personAge(state.form.age),
+  };
+  const calories = baselineCalories(weightKg, heightCm, person);
   return {
     unit,
     heightCm,
     weightKg,
-    calories: baselineCalories(weightKg, heightCm),
-    deficit: snapDeficit(state.form.deficit, baselineCalories(weightKg, heightCm)),
+    gender: person.gender,
+    activity: person.activity,
+    age: person.age,
+    calories,
+    deficit: snapDeficit(state.form.deficit, calories),
   };
 }
 
@@ -562,7 +583,7 @@ function pictureBlock() {
       <div class="energy-track" aria-hidden="true"><span class="energy-keep" style="width:${keep * 100}%"></span><span class="energy-cut" style="width:${(1 - keep) * 100}%"></span></div>
       <div class="energy-fig">${target > 0 ? tickHTML("day-target", target) : "—"}<small>max</small></div>
     </div>
-    <div class="energy-notes"><span>${baseline ? tickHTML("baseline", baseline) : "—"}</span><span>− ${tickHTML("deficit-show", deficit, 0)} · <em class="cut-${cut.id}">${cut.name}</em></span></div>
+    <div class="energy-notes"><span>${baseline ? tickHTML("baseline", baseline) : "—"} needed</span><span>− ${tickHTML("deficit-show", deficit, 0)} · <em class="cut-${cut.id}">${cut.name}</em></span></div>
   </div>`;
 }
 
@@ -593,6 +614,20 @@ function bodyFields({ weight = true } = {}) {
     ${weight
       ? bodySlider("weight", `Weight in ${imperial ? "pounds" : "kilograms"}`, bounds.min, bounds.max, form.weight, 1)
       : `<p>Latest weight: <strong>${tickHTML("latest-weight", tenth(form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg), 1, ` ${form.unit}`)}</strong></p>`}
+    ${bodySlider("age", "Age", 18, 80, form.age)}
+    <label class="symbol-field">
+      <span>Gender <em id="genderWord">${form.gender ? "Male" : "Female"}</em></span>
+      <span class="symbol-row">
+        <span class="mark${form.gender ? "" : " on"}" data-gender-mark="0" aria-hidden="true">♀</span>
+        <input type="range" min="0" max="1" step="1" value="${form.gender ? 1 : 0}" data-form="gender" aria-label="Gender" aria-valuetext="${form.gender ? "Male" : "Female"}">
+        <span class="mark${form.gender ? " on" : ""}" data-gender-mark="1" aria-hidden="true">♂</span>
+      </span>
+    </label>
+    <label>
+      <span>Activity <em id="activityWord">${esc(ACTIVITY[form.activity].name)}</em></span>
+      <input type="range" min="0" max="4" step="1" value="${form.activity}" data-form="activity" aria-label="Activity" aria-valuetext="${esc(ACTIVITY[form.activity].name)}">
+      <span class="quiet" id="activityNote">${esc(ACTIVITY[form.activity].text)}</span>
+    </label>
     <label><span>Deficit ${tickHTML("form-deficit", deficit, 0)} · <em id="deficitWord" class="cut-${cut.id}">${cut.name}</em></span>
       <input id="deficit" type="range" min="0" max="${maxCut}" step="5" value="${deficit}" data-form="deficit">
     </label>
@@ -1572,6 +1607,7 @@ function onInput(event) {
     input.value = key === "weight" ? value.toFixed(1) : String(value);
     const tick = document.querySelector(`[data-tick="form-${key}"]`);
     if (tick) writeTick(tick, value);
+    if (key === "gender" || key === "activity") paintPersonWords();
     if (key !== "deficit") paintDeficitSlider();
     else paintDeficitWord();
     const box = document.querySelector(".bmi");
@@ -1712,6 +1748,25 @@ function showDate(date) {
   };
 }
 
+function paintPersonWords() {
+  const gender = state.form.gender ? 1 : 0;
+  const activity = activityIndex(state.form.activity);
+  const genderWord = document.getElementById("genderWord");
+  const genderInput = document.querySelector('[data-form="gender"]');
+  if (genderWord) genderWord.textContent = gender ? "Male" : "Female";
+  if (genderInput) genderInput.setAttribute("aria-valuetext", gender ? "Male" : "Female");
+  document.querySelectorAll("[data-gender-mark]").forEach((mark) => {
+    mark.classList.toggle("on", Number(mark.dataset.genderMark) === gender);
+  });
+  const level = ACTIVITY[activity];
+  const activityWord = document.getElementById("activityWord");
+  const activityNote = document.getElementById("activityNote");
+  const activityInput = document.querySelector('[data-form="activity"]');
+  if (activityWord) activityWord.textContent = level.name;
+  if (activityNote) activityNote.textContent = level.text;
+  if (activityInput) activityInput.setAttribute("aria-valuetext", level.name);
+}
+
 function paintDeficitWord() {
   const profile = profileFromForm();
   const cut = deficitWords(state.form.deficit, profile.calories);
@@ -1827,7 +1882,8 @@ function saveWeight() {
   }
   state.profile.unit = state.weightForm.unit;
   state.profile.weightKg = kg;
-  state.profile.calories = baselineCalories(kg, state.profile.heightCm);
+  state.profile.calories = baselineCalories(kg, state.profile.heightCm, state.profile);
+  state.profile.deficit = snapDeficit(state.profile.deficit, state.profile.calories);
   saveProfile(state.profile);
   clampCalMax();
   savePresets(state.presets, state.activePresetId);
@@ -1866,7 +1922,8 @@ function persistPrefs() {
   const profile = profileFromForm();
   const editingWeight = Boolean(document.querySelector('[data-form="weight"]'));
   if (!editingWeight) profile.weightKg = state.profile.weightKg;
-  profile.calories = baselineCalories(profile.weightKg, profile.heightCm);
+  profile.calories = baselineCalories(profile.weightKg, profile.heightCm, profile);
+  profile.deficit = snapDeficit(profile.deficit, profile.calories);
   state.formError = validateBody(profile, { requireWeight: editingWeight });
   paintFormError();
   if (!state.formError) {
@@ -1925,7 +1982,10 @@ async function boot() {
     if (!state.fasting) state.fasting = { on: true, hours: 16, windowStartsAt: "12:00" };
     state.fasting.hours = Math.min(20, Math.max(12, Math.round(Number(state.fasting.hours) || 16)));
     if (state.profile?.heightCm && state.profile?.weightKg) {
-      state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
+      state.profile.gender = state.profile.gender === "male" ? "male" : "female";
+      state.profile.activity = activityIndex(state.profile.activity);
+      state.profile.age = personAge(state.profile.age);
+      state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm, state.profile);
       state.profile.deficit = snapDeficit(state.profile.deficit, state.profile.calories);
       saveProfile(state.profile);
     }

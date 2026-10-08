@@ -33,14 +33,35 @@ export function bmi(weightKg, heightCm) {
   return weightKg / (meters * meters);
 }
 
-export function baselineCalories(weightKg, heightCm) {
-  const shown = round2(bmi(weightKg, heightCm));
-  if (!shown || !weightKg) return 0;
-  let perKg = 22;
-  if (shown < 18.5) perKg = 30;
-  else if (shown < 25) perKg = 27;
-  else if (shown < 30) perKg = 24;
-  return round2(weightKg * perKg);
+export const ACTIVITY = [
+  { name: "No activity", factor: 1.2, text: "Mostly sitting, with only the walking a quiet day needs." },
+  { name: "Light", factor: 1.375, text: "On your feet for ordinary chores, or a walk on a few days a week." },
+  { name: "Moderate", factor: 1.55, text: "A real workout several days a week, such as a brisk walk, a class, or lifting." },
+  { name: "Active", factor: 1.725, text: "Hard exercise or a job on your feet, most days." },
+  { name: "Most active", factor: 1.9, text: "Hard training every day, or heavy physical work plus exercise." },
+];
+
+export function activityIndex(value) {
+  if (value == null || value === "") return 1;
+  const index = Math.round(Number(value));
+  if (!Number.isFinite(index)) return 1;
+  return Math.min(ACTIVITY.length - 1, Math.max(0, index));
+}
+
+export function personAge(value) {
+  if (value == null || value === "") return 30;
+  const age = Math.round(Number(value));
+  if (!Number.isFinite(age)) return 30;
+  return Math.min(80, Math.max(18, age));
+}
+
+export function baselineCalories(weightKg, heightCm, person = {}) {
+  if (!weightKg || !heightCm) return 0;
+  const age = personAge(person.age);
+  const sex = person.gender === "male" ? 5 : -161;
+  const resting = 10 * weightKg + 6.25 * heightCm - 5 * age + sex;
+  if (!(resting > 0)) return 0;
+  return round2(resting * ACTIVITY[activityIndex(person.activity)].factor);
 }
 
 export function bmiBand(value) {
