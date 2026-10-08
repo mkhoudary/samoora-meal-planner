@@ -25,7 +25,9 @@ import { playTicks, seedTick, tickHTML, writeTick } from "./tick.js";
 import {
   baselineCalories,
   bmi,
+  bmiBand,
   cmToFtIn,
+  deficitWords,
   round2,
   clockLabel,
   formatWeight,
@@ -66,6 +68,9 @@ const state = {
   macrosOpen: false,
   deal: "",
   scrollTo: null,
+  focusDate: "",
+  locks: { lunch: false, dinner: false },
+  dayNote: "",
 };
 
 const app = document.querySelector("#app");
@@ -90,6 +95,40 @@ function todayKey(date = new Date()) {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
+function shiftDate(iso, days) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(year, month - 1, day, 12);
+  date.setDate(date.getDate() + days);
+  return todayKey(date);
+}
+
+function tomorrowKey() {
+  return shiftDate(todayKey(), 1);
+}
+
+function yesterdayKey() {
+  return shiftDate(todayKey(), -1);
+}
+
+function planFor(date) {
+  return state.plans.find((plan) => plan.date === date && plan.confirmedAt) || null;
+}
+
+function floorKey() {
+  const dates = state.plans.map((plan) => plan.date).filter((date) => date && date < todayKey()).sort();
+  return dates[0] || yesterdayKey();
+}
+
+function focusKey() {
+  const focus = state.focusDate;
+  if (!focus || focus > tomorrowKey()) return todayKey();
+  return focus;
+}
+
+function aheadDay(date = focusKey()) {
+  return date > todayKey();
+}
+
 function prettyDate(isoDate) {
   const [year, month, day] = isoDate.split("-").map(Number);
   const date = new Date(year, month - 1, day);
@@ -99,7 +138,7 @@ function prettyDate(isoDate) {
 }
 
 function todayPlan() {
-  return state.plans.find((plan) => plan.date === todayKey() && plan.confirmedAt) || null;
+  return planFor(todayKey());
 }
 
 function anyRated(plan) {
@@ -146,19 +185,41 @@ function findMeal(id) {
   return state.meals.find((meal) => meal.id === id) || null;
 }
 
+function tenth(value) {
+  return Math.round(Number(value) * 10) / 10;
+}
+
+function weightBounds(unit) {
+  return unit === "kg" ? { min: 40, max: 150 } : { min: 90, max: 330 };
+}
+
+function heightBounds(unit) {
+  return unit === "kg"
+    ? { cm: [140, 200] }
+    : { feet: [4, 6], inches: [0, 11] };
+}
+
+function deficitMax(baseline) {
+  const room = Math.floor(Number(baseline) || 0) - 1;
+  return Math.max(0, Math.min(1000, room));
+}
+
 function formFromProfile(profile) {
   const unit = profile?.unit || "lb";
   const heightCm = profile?.heightCm || 165;
   const imperial = cmToFtIn(heightCm);
   const weightKg = profile?.weightKg || (unit === "lb" ? lbToKg(150) : 68);
+  const bounds = weightBounds(unit);
+  const height = heightBounds(unit);
+  const weight = Math.min(bounds.max, Math.max(bounds.min, tenth(unit === "lb" ? kgToLb(weightKg) : weightKg)));
   return {
     unit,
-    feet: profile ? imperial.feet : 5,
-    inches: profile ? imperial.inches : 5,
-    cm: round2(heightCm),
-    weight: unit === "lb" ? round2(kgToLb(weightKg)) : round2(weightKg),
+    feet: Math.min(height.feet?.[1] ?? imperial.feet, Math.max(height.feet?.[0] ?? imperial.feet, profile ? imperial.feet : 5)),
+    inches: Math.min(11, Math.max(0, profile ? imperial.inches : 5)),
+    cm: Math.min(height.cm?.[1] ?? 200, Math.max(height.cm?.[0] ?? 140, Math.round(heightCm))),
+    weight,
     calories: baselineCalories(weightKg, heightCm),
-    deficit: profile?.deficit ?? 300,
+    deficit: Math.round(profile?.deficit ?? 300),
   };
 }
 
@@ -178,16 +239,18 @@ function profileFromForm() {
 }
 
 function validateBody(profile, { requireWeight = true } = {}) {
+  const height = heightBounds(profile.unit);
+  const weight = weightBounds(profile.unit);
   if (profile.unit === "kg") {
-    if (profile.heightCm < 120 || profile.heightCm > 230) return "That height looks off. Want to check it?";
-    if (requireWeight && (profile.weightKg < 32 || profile.weightKg > 230)) return "That weight looks off. Want to check it?";
+    if (profile.heightCm < height.cm[0] || profile.heightCm > height.cm[1]) return "That height looks off. Want to check it?";
+    if (requireWeight && (profile.weightKg < weight.min || profile.weightKg > weight.max)) return "That weight looks off. Want to check it?";
   } else {
     const { feet, inches } = cmToFtIn(profile.heightCm);
-    if (feet < 4 || feet > 7 || inches < 0 || inches > 11) return "That height looks off. Want to check it?";
+    if (feet < height.feet[0] || feet > height.feet[1] || inches < 0 || inches > 11) return "That height looks off. Want to check it?";
     const pounds = kgToLb(profile.weightKg);
-    if (requireWeight && (pounds < 70 || pounds > 500)) return "That weight looks off. Want to check it?";
+    if (requireWeight && (pounds < weight.min || pounds > weight.max)) return "That weight looks off. Want to check it?";
   }
-  if (profile.deficit < 0 || profile.deficit >= profile.calories) return "Leave yourself something to eat, sis. The deficit has to stay under your baseline.";
+  if (profile.deficit < 0 || profile.deficit > deficitMax(profile.calories)) return "Leave yourself something to eat, sis. The deficit has to stay under your baseline.";
   return "";
 }
 
@@ -222,27 +285,107 @@ function backBar() {
   </div>`;
 }
 
-function macroField(key, label, min, max, step) {
-  const range = activePreset()[key];
-  if (key === "cal") {
-    const ceiling = Math.max(0, liveTarget());
-    const floor = Math.min(range[0], ceiling || range[0]);
-    const sliderMin = Math.min(min, ceiling || min);
-    const sliderMax = Math.max(sliderMin, ceiling || min);
-    return `<div class="macro"><strong>${label}</strong>
-      <label><span>Greater than ${tickHTML(`${key}-min`, floor)}</span>
-        <input type="range" min="${sliderMin}" max="${sliderMax}" step="1" value="${floor}" data-range="${key}" data-end="0">
-      </label>
-      <div class="macro-max"><i></i><span>Max ${ceiling ? tickHTML("cal-max", ceiling) : "—"}</span></div>
-    </div>`;
+function canShiftYesterday(date) {
+  return shiftDate(date, -1) >= floorKey();
+}
+
+function dayNav(date = focusKey()) {
+  const onHome = state.screen === "home";
+  const viewing = onHome ? todayKey() : date;
+  const button = (day, label, pressed, enabled) =>
+    `<button class="ghost" type="button" data-action="shift-day" data-day="${day}" aria-pressed="${pressed}" ${enabled ? "" : "disabled"}>${label}</button>`;
+  return `<div class="day-nav" role="group" aria-label="Days">
+    ${button("yesterday", "Yesterday", !onHome && viewing === yesterdayKey(), canShiftYesterday(viewing))}
+    ${button("today", "Today", onHome || viewing === todayKey(), true)}
+    ${button("tomorrow", "Tomorrow", !onHome && viewing === tomorrowKey(), viewing < tomorrowKey())}
+  </div>`;
+}
+
+function goDay(which) {
+  const current = state.screen === "home" ? todayKey() : focusKey();
+  let next = todayKey();
+  if (which === "yesterday") {
+    next = shiftDate(current, -1);
+    if (next < floorKey()) return;
+  } else if (which === "tomorrow") {
+    if (current >= tomorrowKey()) return;
+    next = shiftDate(current, 1);
   }
+  const stayOnHistory = state.screen === "history" && which === "yesterday";
+  showDate(next);
+  state.dayNote = "";
+  state.screen = stayOnHistory ? "history" : "planner";
+  state.scrollTo = "top";
+  render();
+}
+
+const MACRO_LIMITS = {
+  protein: [80, 120],
+  carbs: [30, 40],
+  fat: [50, 70],
+};
+
+function calorieCap() {
+  return Math.max(0, Math.floor(liveTarget()));
+}
+
+function rangeBounds(key) {
+  if (key === "cal") return [0, calorieCap()];
+  return MACRO_LIMITS[key];
+}
+
+function clampWindow(stored, min, max) {
+  let low = Math.round(Number(stored?.[0]));
+  let high = Math.round(Number(stored?.[1]));
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return [min, max];
+  if ((low < min && high <= min) || (low >= max && high > max) || (low <= min && high >= max)) return [min, max];
+  low = Math.min(max, Math.max(min, low));
+  high = Math.min(max, Math.max(min, high));
+  if (low > high) return [high, low];
+  return [low, high];
+}
+
+function sanitizePreset(preset) {
+  const cap = calorieCap();
+  if (cap > 0) {
+    let low = Math.round(Number(preset.cal?.[0]));
+    let high = Math.round(Number(preset.cal?.[1]));
+    if (!Number.isFinite(low) || low < 0) low = 0;
+    if (!Number.isFinite(high) || high <= 0 || preset.calChosen !== true) high = cap;
+    high = Math.min(cap, high);
+    low = Math.min(high, Math.max(0, low));
+    preset.cal = [low, high];
+  }
+  Object.entries(MACRO_LIMITS).forEach(([key, [min, max]]) => {
+    preset[key] = clampWindow(preset[key], min, max);
+  });
+}
+
+function knobShift(value, min, max) {
+  const span = Math.max(1, max - min);
+  const pct = (value - min) / span;
+  return `calc(${(pct * 100).toFixed(4)}% - ${(pct * 22).toFixed(2)}px)`;
+}
+
+function macroField(key, label) {
+  const [min, max] = rangeBounds(key);
+  const range = activePreset()[key];
+  const low = Math.min(max, Math.max(min, Math.round(range[0])));
+  const high = Math.min(max, Math.max(low, Math.round(range[1])));
+  const span = Math.max(1, max - min);
+  const fillLeft = ((low - min) / span) * 100;
+  const fillWidth = ((high - low) / span) * 100;
+  const knob = (end, value) => `<button type="button" class="knob" data-range="${key}" data-end="${end}" role="slider" aria-label="${label} ${end === 0 ? "from" : "to"}" aria-valuemin="${min}" aria-valuemax="${max}" aria-valuenow="${value}" aria-orientation="horizontal" style="left:${knobShift(value, min, max)}"></button>`;
+  const scaleMax = key === "cal" ? tickHTML("cal-cap", max, 0) : String(max);
   return `<div class="macro"><strong>${label}</strong>
-    <label><span>Greater than ${tickHTML(`${key}-min`, range[0])}</span>
-      <input type="range" min="${min}" max="${max}" step="${step}" value="${range[0]}" data-range="${key}" data-end="0">
-    </label>
-    <label><span>Less than ${tickHTML(`${key}-max`, range[1])}</span>
-      <input type="range" min="${min}" max="${max}" step="${step}" value="${range[1]}" data-range="${key}" data-end="1">
-    </label></div>`;
+    <div class="duo-read">${tickHTML(`${key}-min`, low, 0)}<span class="duo-dash">–</span>${tickHTML(`${key}-max`, high, 0)}</div>
+    <div class="duo" data-duo="${key}">
+      <div class="duo-rail"><div class="duo-fill" style="left:${fillLeft}%;width:${fillWidth}%"></div></div>
+      ${knob(0, low)}
+      ${knob(1, high)}
+    </div>
+    <div class="duo-scale"><span>${min}</span><span>${scaleMax}</span></div>
+  </div>`;
 }
 
 function levelField(key, label, image) {
@@ -256,7 +399,7 @@ function levelField(key, label, image) {
 }
 
 function presetEditor() {
-  clampCalMax();
+  state.presets.forEach((preset) => sanitizePreset(preset));
   const preset = activePreset();
   const heavier = preset.heavier;
   const chips = state.presets.map((item) =>
@@ -267,10 +410,10 @@ function presetEditor() {
       <input id="presetName" type="text" value="${esc(preset.name)}" data-preset-name="1">
     </label>
     <div class="macros" style="margin-top:12px">
-      ${macroField("cal", "Calories", 600, 2800, 10)}
-      ${macroField("protein", "Protein (g)", 20, 220, 1)}
-      ${macroField("carbs", "Carbs (g)", 20, 320, 1)}
-      ${macroField("fat", "Fat (g)", 10, 180, 1)}
+      ${macroField("cal", "Calories")}
+      ${macroField("protein", "Protein (g)")}
+      ${macroField("carbs", "Carbs (g)")}
+      ${macroField("fat", "Fat (g)")}
     </div>
     <h3 style="margin-top:16px">Which meal is heavier?</h3>
     <div class="choice row">
@@ -303,13 +446,13 @@ function fastingFields() {
       <div class="choice row">
         ${[14, 16, 18].map((hour) => `<button type="button" data-action="fast-hours" data-value="${hour}" aria-pressed="${hours === hour}">${hour} hours</button>`).join("")}
       </div>
-      <label><span>Fast length ${tickHTML("fast-hours", hours)} hours</span>
-        <input type="range" min="12" max="20" step="1" value="${hours}" data-fast-hours="1">
+      <label><span>Fast length ${tickHTML("fast-hours", hours, 0)} hours</span>
+        <input type="range" min="12" max="20" step="1" value="${Math.round(hours)}" data-fast-hours="1">
       </label>
       <label>Eating window opens
         <input type="time" value="${esc(fasting.windowStartsAt || "12:00")}" data-window="1">
       </label>
-      <p>You fast ${tickHTML("fast-hours", hours)} hours, then eat for ${tickHTML("eat-hours", 24 - hours)}, starting at ${esc(clockLabel(fasting.windowStartsAt))}.</p>
+      <p>You fast ${tickHTML("fast-hours", hours, 0)} hours, then eat for ${tickHTML("eat-hours", 24 - hours, 0)}, starting at ${esc(clockLabel(fasting.windowStartsAt))}.</p>
     </div>` : `<p class="quiet">The app stays in the warm eating look.</p>`}
   </div>`;
 }
@@ -323,35 +466,58 @@ function liveTarget() {
 }
 
 function clampCalMax() {
-  const max = liveTarget();
-  const preset = activePreset();
-  if (!preset || !(max > 0)) return;
-  preset.cal[1] = max;
-  if (preset.cal[0] > max) preset.cal[0] = max;
+  state.presets.forEach((preset) => sanitizePreset(preset));
 }
 
 function planningPreset() {
-  clampCalMax();
   const preset = activePreset();
-  return { ...preset, cal: [...preset.cal] };
+  const copy = {
+    ...preset,
+    cal: [...preset.cal],
+    protein: [...preset.protein],
+    carbs: [...preset.carbs],
+    fat: [...preset.fat],
+  };
+  sanitizePreset(copy);
+  return copy;
+}
+
+function paintDuo(key) {
+  const duo = document.querySelector(`[data-duo="${key}"]`);
+  const preset = activePreset();
+  if (!duo || !preset) return;
+  const [min, max] = rangeBounds(key);
+  const low = Math.round(preset[key][0]);
+  const high = Math.round(preset[key][1]);
+  const span = Math.max(1, max - min);
+  duo.querySelectorAll(".knob").forEach((knob) => {
+    const end = Number(knob.dataset.end);
+    const value = end === 0 ? low : high;
+    knob.style.left = knobShift(value, min, max);
+    knob.setAttribute("aria-valuemin", String(min));
+    knob.setAttribute("aria-valuemax", String(max));
+    knob.setAttribute("aria-valuenow", String(value));
+    knob.style.zIndex = duo.dataset.activeEnd === String(end) ? "4" : end === 1 ? "3" : "2";
+  });
+  const fill = duo.querySelector(".duo-fill");
+  fill.style.left = `${((low - min) / span) * 100}%`;
+  fill.style.width = `${((high - low) / span) * 100}%`;
+  const minOut = document.querySelector(`[data-tick="${key}-min"]`);
+  const maxOut = document.querySelector(`[data-tick="${key}-max"]`);
+  if (minOut) writeTick(minOut, low);
+  if (maxOut) writeTick(maxOut, high);
+  if (key === "cal") {
+    const capOut = document.querySelector('[data-tick="cal-cap"]');
+    if (capOut) writeTick(capOut, max);
+  }
 }
 
 function paintCalMax() {
-  const max = liveTarget();
   const preset = activePreset();
-  if (!preset || !(max > 0)) return;
-  const minInput = document.querySelector('[data-range="cal"][data-end="0"]');
-  if (minInput) {
-    const sliderMin = Math.min(600, max);
-    minInput.min = String(sliderMin);
-    minInput.max = String(Math.max(sliderMin, max));
-    minInput.step = "1";
-    minInput.value = String(preset.cal[0]);
-  }
-  const minOut = document.querySelector('[data-tick="cal-min"]');
-  const maxOut = document.querySelector('[data-tick="cal-max"]');
-  if (minOut) writeTick(minOut, preset.cal[0]);
-  if (maxOut) writeTick(maxOut, max);
+  const cap = calorieCap();
+  if (!preset || !(cap > 0) || !document.querySelector('[data-duo="cal"]')) return;
+  sanitizePreset(preset);
+  paintDuo("cal");
 }
 
 function pictureBlock() {
@@ -359,8 +525,9 @@ function pictureBlock() {
   const profile = profileFromForm();
   const picture = bmi(profile.weightKg, profile.heightCm);
   const shown = picture ? round2(picture) : 0;
+  const band = bmiBand(shown);
   const baseline = profile.calories || 0;
-  const deficit = Math.max(0, round2(state.form.deficit));
+  const deficit = Math.max(0, Math.min(deficitMax(baseline), Math.round(state.form.deficit)));
   const target = Math.max(0, round2(baseline - deficit));
   const scaleMin = 15;
   const scaleSpan = 25;
@@ -370,36 +537,53 @@ function pictureBlock() {
     return ((edge - start) / scaleSpan) * 100;
   });
   const keep = baseline > 0 ? Math.min(1, target / baseline) : 0;
-  const label = shown ? `BMI ${fixed2(shown)}. Day maximum ${fixed2(target)} calories.` : "Add height and weight.";
+  const cut = deficitWords(deficit, baseline);
+  const label = shown ? `BMI ${fixed2(shown)}, ${band.name}. Day maximum ${fixed2(target)} calories. Deficit ${cut.name}.` : "Add height and weight.";
   return `<div class="bmi-board" role="img" aria-label="${esc(label)}">
-    <div class="bmi-read"><span class="kicker">BMI</span><strong>${shown ? tickHTML("bmi", shown) : "—"}</strong></div>
+    <div class="bmi-read"><span class="kicker">BMI</span><strong class="band-${band.id}">${shown ? tickHTML("bmi", shown) : "—"}</strong><em class="band-${band.id}">${band.name}</em></div>
     <div class="bmi-scale">
       <div class="bmi-zones">${zones.map((width, index) => `<span class="z${index + 1}" style="width:${width}%"></span>`).join("")}</div>
-      ${pin === null ? "" : `<i class="bmi-pin" style="left:${pin}%"></i>`}
+      ${pin === null ? "" : `<i class="bmi-pin band-${band.id}" style="left:${pin}%"></i>`}
     </div>
     <div class="bmi-marks"><span style="left:14%">18.50</span><span style="left:40%">25.00</span><span style="left:60%">30.00</span></div>
     <div class="energy">
       <div class="energy-track" aria-hidden="true"><span class="energy-keep" style="width:${keep * 100}%"></span><span class="energy-cut" style="width:${(1 - keep) * 100}%"></span></div>
       <div class="energy-fig">${target > 0 ? tickHTML("day-target", target) : "—"}<small>max</small></div>
     </div>
-    <div class="energy-notes"><span>${baseline ? tickHTML("baseline", baseline) : "—"}</span><span>− ${tickHTML("deficit-show", deficit)}</span></div>
+    <div class="energy-notes"><span>${baseline ? tickHTML("baseline", baseline) : "—"}</span><span>− ${tickHTML("deficit-show", deficit, 0)} · <em class="cut-${cut.id}">${cut.name}</em></span></div>
   </div>`;
+}
+
+function bodySlider(key, label, min, max, value, digits = 0) {
+  const shown = digits ? tenth(value) : Math.round(value);
+  return `<label><span>${label} ${tickHTML(`form-${key}`, shown, digits)}</span>
+    <input type="range" min="${min}" max="${max}" step="${digits ? "0.1" : "1"}" value="${digits ? shown.toFixed(1) : shown}" data-form="${key}">
+  </label>`;
 }
 
 function bodyFields({ weight = true } = {}) {
   const form = state.form;
   const imperial = form.unit === "lb";
+  const height = heightBounds(form.unit);
+  const bounds = weightBounds(form.unit);
+  const profile = profileFromForm();
+  const maxCut = deficitMax(profile.calories);
+  const deficit = Math.min(maxCut, Math.max(0, Math.round(form.deficit)));
+  const cut = deficitWords(deficit, profile.calories);
   return `<div class="fields">
     <div class="choice row">
       <button type="button" data-action="unit" data-value="lb" aria-pressed="${imperial}">Pounds</button>
       <button type="button" data-action="unit" data-value="kg" aria-pressed="${!imperial}">Kilograms</button>
     </div>
     ${imperial
-      ? `<div class="split"><label>Feet<input id="feet" type="number" min="4" max="7" step="0.01" value="${fixed2(form.feet)}" data-form="feet"></label>
-         <label>Inches<input id="inches" type="number" min="0" max="11" step="0.01" value="${fixed2(form.inches)}" data-form="inches"></label></div>`
-      : `<label>Height in centimeters<input id="cm" type="number" min="120" max="230" step="0.01" value="${fixed2(form.cm)}" data-form="cm"></label>`}
-    ${weight ? `<label>Weight in ${imperial ? "pounds" : "kilograms"}<input id="bodyWeight" type="number" min="1" step="0.01" value="${fixed2(form.weight)}" data-form="weight"></label>` : `<p>Latest weight: <strong>${tickHTML("latest-weight", form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg, 2, ` ${form.unit}`)}</strong></p>`}
-    <label>Deficit<input id="deficit" type="number" min="0" step="0.01" value="${fixed2(form.deficit)}" data-form="deficit"></label>
+      ? `<div class="split">${bodySlider("feet", "Feet", height.feet[0], height.feet[1], form.feet)}${bodySlider("inches", "Inches", height.inches[0], height.inches[1], form.inches)}</div>`
+      : bodySlider("cm", "Height in centimeters", height.cm[0], height.cm[1], form.cm)}
+    ${weight
+      ? bodySlider("weight", `Weight in ${imperial ? "pounds" : "kilograms"}`, bounds.min, bounds.max, form.weight, 1)
+      : `<p>Latest weight: <strong>${tickHTML("latest-weight", tenth(form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg), 1, ` ${form.unit}`)}</strong></p>`}
+    <label><span>Deficit ${tickHTML("form-deficit", deficit, 0)} · <em id="deficitWord" class="cut-${cut.id}">${cut.name}</em></span>
+      <input id="deficit" type="range" min="0" max="${maxCut}" step="1" value="${deficit}" data-form="deficit">
+    </label>
     <div class="bmi">${pictureBlock()}</div>
     ${state.formError ? `<p class="warn" id="form-error">${esc(state.formError)}</p>` : ""}
   </div>`;
@@ -486,7 +670,7 @@ function mealHeights(lunch, dinner, width) {
   const probe = document.createElement("div");
   probe.className = "meals";
   probe.style.cssText = `position:fixed;visibility:hidden;pointer-events:none;left:-10000px;top:0;width:${width}px`;
-  probe.innerHTML = `${mealCard(lunch, "Lunch")}${mealCard(dinner, "Dinner")}`;
+  probe.innerHTML = `${mealCard(lunch, "Lunch", { lockable: true })}${mealCard(dinner, "Dinner", { lockable: true })}`;
   document.body.appendChild(probe);
   const heights = [...probe.querySelectorAll(".meal")].map((card) => Math.ceil(card.offsetHeight));
   probe.remove();
@@ -541,7 +725,7 @@ function paintSurprise(token) {
   const reveal = () => {
     if (state.dealToken !== token || !document.querySelector("#planner-meals")) return;
     const box = document.querySelector("#planner-meals");
-    box.innerHTML = `${withMealHeight(mealCard(lunch, "Lunch"), hold[0])}${withMealHeight(mealCard(dinner, "Dinner"), hold[1])}`;
+    box.innerHTML = `${withMealHeight(mealCard(lunch, "Lunch", { lockable: true }), hold[0])}${withMealHeight(mealCard(dinner, "Dinner", { lockable: true }), hold[1])}`;
     box.classList.remove("loading");
     state.deal = "";
     playTicks(box);
@@ -556,9 +740,10 @@ function paintSurprise(token) {
   }
   meals.classList.add("loading");
   meals.innerHTML = `${mealSkeleton("Lunch", hold[0])}${mealSkeleton("Dinner", hold[1])}`;
+  const shufflingOne = state.locks.lunch !== state.locks.dinner && (state.locks.lunch || state.locks.dinner);
   const note = state.draft.relaxed
     ? "This is the closest pair I could find."
-    : state.deal === "again" ? "Another pair." : "";
+    : state.deal === "again" ? (shufflingOne ? "Another meal." : "Another pair.") : "";
   document.querySelector(".deal-note")?.remove();
   if (note) {
     const flag = document.createElement("p");
@@ -573,13 +758,19 @@ function paintSurprise(token) {
   return true;
 }
 
-function mealCard(meal, slot, { rating = undefined, scope = "" } = {}) {
+function mealCard(meal, slot, { rating = undefined, scope = "", lockable = false } = {}) {
+  const key = slot.toLowerCase();
+  const locked = Boolean(state.locks?.[key]);
+  const lock = lockable && meal
+    ? `<button class="tiny lock" type="button" data-action="lock-meal" data-slot="${key}" aria-pressed="${locked ? "true" : "false"}">${locked ? "Unlock" : "Lock"}</button>`
+    : "";
+  const slotRow = `<div class="slot-row"><p class="slot">${slot}</p>${lock}</div>`;
   if (!meal) {
-    return `<article class="meal"><p class="slot">${slot}</p><p class="quiet">Nothing here yet.</p></article>`;
+    return `<article class="meal">${slotRow}<p class="quiet">Nothing here yet.</p></article>`;
   }
   const prefix = `${scope}${slot.toLowerCase()}`;
   const pills = String(meal.categories || "").split(";").map((item) => item.trim()).filter(Boolean).slice(0, 6);
-  return `<article class="meal"><p class="slot">${slot}</p><h3>${esc(meal.name)}</h3>
+  return `<article class="meal">${slotRow}<h3>${esc(meal.name)}</h3>
     <p class="quiet">${esc(meal.chef || "CookUnity")}</p>
     <div class="stats">
       <span>${tickHTML(`${prefix}-cal`, meal.calories)} cal</span>
@@ -679,6 +870,9 @@ function stars(planDate, slot, field, current) {
 }
 
 function ratingCard(plan, { heading = true } = {}) {
+  if (plan.date > todayKey()) {
+    return `<p class="warn" id="rating-note">You can only rate tomorrow.</p>`;
+  }
   state.ratingDraft[plan.date] = state.ratingDraft[plan.date] || { lunch: {}, dinner: {} };
   const lunch = findMeal(plan.lunchId);
   const dinner = findMeal(plan.dinnerId);
@@ -737,7 +931,7 @@ function chartSVG(log, unit = state.profile.unit) {
     const x = xOf(point.at.getTime());
     const y = yOf(point.value);
     return `<circle cx="${x}" cy="${y}" r="${last ? 7 : 5}" fill="${last ? "#c4623a" : "#5f8f62"}"><title>${esc(point.label)}</title></circle>
-      ${labeled.has(index) ? `<text class="tick" data-tick="log-${point.at.getTime()}" data-value="${round2(point.value)}" data-digits="2" data-suffix=" ${unit}" x="${x}" y="${y - 28}" text-anchor="middle">${esc(`${fixed2(point.value)} ${unit}`)}</text><text x="${x}" y="${y - 14}" text-anchor="middle">${esc(stamp(point.at))}</text>` : ""}`;
+      ${labeled.has(index) ? `<text class="tick" data-tick="log-${point.at.getTime()}" data-value="${tenth(point.value)}" data-digits="1" data-suffix=" ${unit}" x="${x}" y="${y - 28}" text-anchor="middle">${esc(`${tenth(point.value).toFixed(1)} ${unit}`)}</text><text x="${x}" y="${y - 14}" text-anchor="middle">${esc(stamp(point.at))}</text>` : ""}`;
   }).join("");
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Weight over time">
     <path d="${line}" fill="none" stroke="#c4623a" stroke-width="3"/>
@@ -760,8 +954,8 @@ function weightScreen({ weekly = false } = {}) {
         <button type="button" data-action="weight-unit" data-value="lb" aria-pressed="${form.unit === "lb"}">Pounds</button>
         <button type="button" data-action="weight-unit" data-value="kg" aria-pressed="${form.unit === "kg"}">Kilograms</button>
       </div>
-      <label>Weight in ${form.unit}
-        <input id="weightNow" type="number" min="1" step="0.01" value="${fixed2(form.value)}" data-weight="1">
+      <label><span>Weight in ${form.unit} ${tickHTML("check-weight", tenth(form.value), 1)}</span>
+        <input id="weightNow" type="range" min="${weightBounds(form.unit).min}" max="${weightBounds(form.unit).max}" step="0.1" value="${tenth(form.value).toFixed(1)}" data-weight="1">
       </label>
       ${state.formError ? `<p class="warn" id="form-error">${esc(state.formError)}</p>` : ""}
       <div class="row">
@@ -784,7 +978,7 @@ function renderOnboard() {
   const bubbles = [
     privacyBlock(),
     `<p>The clock is yours. You can change it any day.</p>${privacyBlock()}`,
-    `<p>Set the day the way you like it. Greater than, less than, and how heavy lunch or dinner should be. You can change this whenever you want.</p>`,
+    `<p>Set the day the way you like it. Calories stay under a whole number, and protein, carbs, and fat each have a range. You can change this whenever you want.</p>`,
   ];
   const brand = step === 1
     ? `<div class="hero-logo"><img src="./assets/logo.png" alt="Samoora Meal Planner"><p class="love">Made with Love by Mohammed</p></div>`
@@ -818,6 +1012,44 @@ function fastingBlock(status) {
     </section>`;
 }
 
+function homeToday(plan) {
+  if (!plan) {
+    return `<section class="day-block" id="home-today"><h2>Today</h2>
+      <p class="quiet">The day is open. Plan lunch and dinner when you're ready.</p>
+      <button class="primary" type="button" data-action="planner" data-day="today">Plan today</button>
+    </section>`;
+  }
+  const needsRating = !dayClosed(plan) && (!plan.ratings?.lunch?.overall || !plan.ratings?.dinner?.overall);
+  return `<section class="day-block" id="home-today"><h2>Today</h2>
+    <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { rating: plan.ratings?.lunch, scope: "home-today-" })}${mealCard(findMeal(plan.dinnerId), "Dinner", { rating: plan.ratings?.dinner, scope: "home-today-" })}</div>
+    <div class="row" style="margin-top:14px">
+      ${anyRated(plan) ? "" : `<button class="primary" type="button" data-action="planner" data-day="today" data-scroll="#planner-meals">Change meals</button>`}
+      ${needsRating ? `<button class="ghost" type="button" data-action="planner" data-day="today" data-scroll="#day-rating">Rate these meals</button>` : ""}
+    </div>
+  </section>`;
+}
+
+function homeTomorrow(tomorrow, todayReady) {
+  if (tomorrow) {
+    return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
+      <p class="warn" id="rating-note">You can only rate tomorrow.</p>
+      <div class="meals">${mealCard(findMeal(tomorrow.lunchId), "Lunch", { scope: "home-tomorrow-" })}${mealCard(findMeal(tomorrow.dinnerId), "Dinner", { scope: "home-tomorrow-" })}</div>
+      <div class="row" style="margin-top:14px">
+        <button class="primary" type="button" data-action="planner" data-day="tomorrow">Change meals</button>
+      </div>
+    </section>`;
+  }
+  if (!todayReady) {
+    return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
+      <p class="quiet">Tomorrow opens once today is planned.</p>
+    </section>`;
+  }
+  return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
+    <p class="quiet">Tomorrow is open for planning. Rating waits for the day itself.</p>
+    <button class="primary" type="button" data-action="planner" data-day="tomorrow">Plan tomorrow</button>
+  </section>`;
+}
+
 function renderHome() {
   const due = weightIsDue() && sessionStorage.getItem("samoora.weightLater") !== "1";
   if (due) {
@@ -827,32 +1059,27 @@ function renderHome() {
   const status = fastingStatus(state.fasting);
   const fastingNow = status.enabled && status.phase === "fasting";
   const plan = todayPlan();
-  const lunch = plan ? findMeal(plan.lunchId) : null;
-  const dinner = plan ? findMeal(plan.dinnerId) : null;
-  const closed = dayClosed(plan);
-  const waiting = confirmedPlans().filter((item) => item.date !== todayKey() && (!item.ratings?.lunch?.overall || !item.ratings?.dinner?.overall));
-  const needsRating = plan && !closed && (!plan.ratings?.lunch?.overall || !plan.ratings?.dinner?.overall);
-  const showMeals = plan && !closed;
+  const tomorrow = planFor(tomorrowKey());
+  const waiting = confirmedPlans().filter((item) => item.date < todayKey() && (!item.ratings?.lunch?.overall || !item.ratings?.dinner?.overall));
   return `${header()}<main class="wrap">
     <p class="quiet">${esc(prettyDate(todayKey()))}</p>
     <h1>${fastingNow ? "You're fasting" : "Home"}</h1>
     ${fastingBlock(status)}
+    ${dayNav(todayKey())}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${waiting.length ? `<p class="banner"><button class="ghost" type="button" data-action="history">History</button> is holding meals that still want a rating.</p>` : ""}
-    ${showMeals ? `${host("thumbs", "<p>This is the day you saved. It stays on this date.</p>")}
-      <div class="meals">${mealCard(lunch, "Lunch", { rating: plan.ratings?.lunch })}${mealCard(dinner, "Dinner", { rating: plan.ratings?.dinner })}</div>
-      <div class="row" style="margin-top:14px">
-        ${anyRated(plan) ? "" : `<button class="primary" type="button" data-action="planner" data-scroll="#planner-meals">Change meals</button>`}
-        ${needsRating ? `<button class="ghost" type="button" data-action="planner" data-scroll="#day-rating">Rate these meals</button>` : ""}
-      </div>` : `${host(closed ? "thumbs" : "chef", closed ? "<p>This day is saved. It stays in History.</p>" : "<p>The day is open. Plan lunch and dinner when you're ready.</p>")}
-      <button class="primary" type="button" data-action="${plan ? "finish-day" : "planner"}">Start a New Day</button>`}
+    ${homeToday(plan)}
+    ${homeTomorrow(tomorrow, Boolean(plan))}
     ${footer()}</main>`;
 }
 
 function renderPlanner() {
   const status = fastingStatus(state.fasting);
   const fastingNow = status.enabled && status.phase === "fasting";
-  const saved = todayPlan();
+  const date = focusKey();
+  const ahead = aheadDay(date);
+  const past = date < todayKey();
+  const saved = planFor(date);
   const locked = Boolean(saved?.confirmedAt);
   const finished = Boolean(saved?.finishedAt);
   const lunch = state.draft.lunch;
@@ -860,22 +1087,36 @@ function renderPlanner() {
   const total = round2((lunch?.calories || 0) + (dinner?.calories || 0));
   const sameMeal = lunch && dinner && lunch.id === dinner.id;
   const ready = lunch && dinner && !sameMeal && !locked;
-  const idiom = idiomFor(todayKey());
+  const idiom = idiomFor(date);
+  const dayLabel = ahead ? "Tomorrow" : date === yesterdayKey() ? "Yesterday" : prettyDate(date);
+  const mealHeading = ahead ? "Tomorrow's meals" : date === todayKey() ? "Today's meals" : date === yesterdayKey() ? "Yesterday's meals" : `${prettyDate(date).split(" · ")[0]}'s meals`;
+  if (past && !saved) {
+    return `${header()}<main class="wrap">
+      <p class="quiet">${esc(prettyDate(date))}</p>
+      <h1>Planner</h1>
+      ${fastingBlock(status)}
+      ${dayNav(date)}
+      ${host("notebook", `<p>Nothing was saved for ${esc(prettyDate(date))}.</p>`)}
+      ${footer()}</main>`;
+  }
   return `${header()}<main class="wrap">
-    <p class="quiet">${esc(prettyDate(todayKey()))}</p>
+    <p class="quiet">${esc(prettyDate(date))}</p>
     <h1>Planner</h1>
     ${fastingBlock(status)}
+    ${dayNav(date)}
+    ${ahead ? `<p class="warn" id="rating-note">You can only rate tomorrow.</p>` : ""}
     ${fastingNow ? `<h2>For when you eat</h2>` : ""}
-    ${host(state.pickMode && !locked ? "grocery" : "chef", `<p class="idiom">${esc(idiom)}</p>`)}
+    ${past ? "" : host(state.pickMode && !locked ? "grocery" : "chef", `<p class="idiom">${esc(idiom)}</p>`)}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
-    ${state.justConfirmed ? `<p class="banner">Saved for ${esc(prettyDate(todayKey()))}. Rate the meals when you've eaten them, then start a new day.</p>` : ""}
-    ${finished ? `<p class="banner">${esc(prettyDate(todayKey()))} keeps this one plan.</p>` : ""}
-    ${locked && !anyRated(saved) ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
+    ${state.dayNote ? `<p class="warn" id="day-note">${esc(state.dayNote)}</p>` : ""}
+    ${state.justConfirmed ? `<p class="banner">Saved for ${esc(dayLabel)}. ${ahead ? "You can only rate tomorrow." : "Rate the meals when you've eaten them, then start a new day."}</p>` : ""}
+    ${!ahead && finished ? `<p class="banner">${esc(prettyDate(date))} keeps this one plan.</p>` : ""}
+    ${locked && date === todayKey() && !anyRated(saved) ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
     ${state.draft.error ? `<p class="warn" id="form-error">${esc(state.draft.error)}</p>` : ""}
     ${state.draft.relaxed ? `<p class="banner">This is the closest pair I could find. The meter tells the truth.</p>` : ""}
     <div id="plan-meter">${meterHTML(total)}</div>
     <div class="plan-head">
-      <h2>Today's meals</h2>
+      <h2>${mealHeading}</h2>
       <button class="icon-btn" type="button" data-action="toggle-macros" aria-expanded="${state.macrosOpen}" aria-label="${state.macrosOpen ? "Hide macros" : "Show macros"}">
         <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V10M10 19V5M16 19v-7M22 19H2"/></svg>
         <span>Macros</span>
@@ -883,9 +1124,9 @@ function renderPlanner() {
     </div>
     ${state.macrosOpen ? macrosPanel(lunch, dinner) : ""}
     <div class="meals-slot">
-      <div id="planner-meals" class="meals">${mealCard(lunch, "Lunch")}${mealCard(dinner, "Dinner")}</div>
+      <div id="planner-meals" class="meals">${mealCard(lunch, "Lunch", { lockable: !locked && !past })}${mealCard(dinner, "Dinner", { lockable: !locked && !past })}</div>
     </div>
-    <div class="row" id="plan-actions" style="margin:14px 0">
+    ${past ? "" : `<div class="row" id="plan-actions" style="margin:14px 0">
       <button class="primary mode" type="button" data-action="surprise" ${locked ? "disabled" : ""}>Surprise Me</button>
       <button class="ghost mode" type="button" data-action="pick-mode" aria-pressed="${state.pickMode && !locked}" ${locked ? "disabled" : ""}>I'll pick</button>
       ${locked && !anyRated(saved)
@@ -893,56 +1134,65 @@ function renderPlanner() {
         : locked
           ? ""
           : `<button class="primary" type="button" data-action="confirm" ${ready ? "" : "disabled"}>Confirm</button>`}
-    </div>
+    </div>`}
     ${sameMeal ? `<p class="warn">Pick two different meals, sis.</p>` : ""}
     ${state.pickMode && !locked ? `<section class="card" id="pick-panel">
       ${eatenHistoryHTML()}
       <label style="margin-top:16px">Search the menu<input id="mealSearch" type="search" value="${esc(state.search)}" placeholder="Chicken, salmon, a chef..."></label>
       <div id="mealResults" class="results">${resultsHTML()}</div>
     </section>` : ""}
-    ${locked ? `<section id="day-rating">
-      ${host("eating", "<p>When you've eaten, tell me how it was. Higher stars bring a meal forward. Lower stars tuck it back. You can also leave them and start a new day.</p>")}
+    ${!ahead && locked ? `<section id="day-rating">
+      ${past
+        ? host("notebook", "<p>This day is saved. A rating still changes what I offer next.</p>")
+        : host("eating", "<p>When you've eaten, tell me how it was. Higher stars bring a meal forward. Lower stars tuck it back. You can also leave them and start a new day.</p>")}
       ${state.ratingNote ? `<p class="banner" id="rating-note">${esc(state.ratingNote)}</p>` : ""}
       ${ratingCard(saved)}
-      ${finished ? "" : `<div class="row" id="day-next"><button class="primary" type="button" data-action="finish-day">Start a New Day</button></div>`}
+      ${date === todayKey() && !finished && !planFor(tomorrowKey()) ? `<div class="row" id="day-next"><button class="primary" type="button" data-action="start-new-day">Start a New Day</button></div>` : ""}
     </section>` : ""}
     ${footer()}</main>`;
 }
 
+function historyDay(plan, { open = true } = {}) {
+  const lunchRating = plan.ratings?.lunch?.overall ? plan.ratings.lunch : undefined;
+  const dinnerRating = plan.ratings?.dinner?.overall ? plan.ratings.dinner : undefined;
+  const future = plan.date > todayKey();
+  const named = plan.date === todayKey() ? "Today" : plan.date === yesterdayKey() ? "Yesterday" : "";
+  const needsRating = open && !future && (!lunchRating || !dinnerRating);
+  return `<section class="card history-day" id="day-${esc(plan.date)}"><h2>${esc(named || prettyDate(plan.date))}</h2>
+    ${named ? `<p class="quiet">${esc(prettyDate(plan.date))}</p>` : ""}
+    ${future ? `<p class="warn" id="rating-note">You can only rate tomorrow.</p>` : ""}
+    <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { ...(lunchRating ? { rating: lunchRating } : {}), scope: `${plan.date}-` })}${mealCard(findMeal(plan.dinnerId), "Dinner", { ...(dinnerRating ? { rating: dinnerRating } : {}), scope: `${plan.date}-` })}</div>
+    ${needsRating ? ratingCard(plan, { heading: false }) : ""}
+  </section>`;
+}
+
 function renderHistory() {
-  const plans = confirmedPlans();
-  const body = plans.length
-    ? plans.map((plan) => {
-      const lunchRating = plan.ratings?.lunch?.overall ? plan.ratings.lunch : undefined;
-      const dinnerRating = plan.ratings?.dinner?.overall ? plan.ratings.dinner : undefined;
-      const open = !lunchRating || !dinnerRating;
-      return `<section class="card history-day"><h2>${esc(prettyDate(plan.date))}</h2>
-        <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { ...(lunchRating ? { rating: lunchRating } : {}), scope: `${plan.date}-` })}${mealCard(findMeal(plan.dinnerId), "Dinner", { ...(dinnerRating ? { rating: dinnerRating } : {}), scope: `${plan.date}-` })}</div>
-        ${open ? ratingCard(plan, { heading: false }) : ""}
-      </section>`;
-    }).join("")
-    : `${host("notebook", "<p>Your eaten meals will gather here, one day at a time.</p>")}`;
+  const date = focusKey() > todayKey() ? todayKey() : focusKey();
+  const plans = confirmedPlans().filter((plan) => plan.date <= todayKey());
+  const focused = plans.find((plan) => plan.date === date);
+  const rest = plans.filter((plan) => plan.date !== date);
+  const focusBlock = focused
+    ? historyDay(focused)
+    : `<section class="card history-day" id="day-${esc(date)}"><h2>${esc(date === todayKey() ? "Today" : date === yesterdayKey() ? "Yesterday" : prettyDate(date))}</h2><p class="quiet">Nothing was saved for ${esc(prettyDate(date))}.</p></section>`;
+  const body = `${focusBlock}${rest.map((plan) => historyDay(plan, { open: false })).join("")}`;
   return `${header()}<main class="wrap">${backBar()}<h1>Meals you've eaten</h1>
+    ${dayNav(date)}
     ${state.ratingNote ? `<p class="banner" id="rating-note">${esc(state.ratingNote)}</p>` : ""}
-    <p class="quiet">Each date keeps one plan.</p>
-    ${body}
+    <p class="quiet">Each date keeps one plan. Tomorrow stays in the planner.</p>
+    ${plans.length || date <= todayKey() ? body : host("notebook", "<p>Your eaten meals will gather here, one day at a time.</p>")}
     ${footer()}</main>`;
 }
 
 function renderPrefs() {
   return `${header()}<main class="wrap">${backBar()}<h1>Preferences</h1>
-    ${host("notebook", "<p>Change any of this and save. It stays on this device, and you can come back to it.</p>")}
+    ${host("notebook", "<p>Change any of this. It saves as you go, and it stays on this device.</p>")}
     <h2>Fasting</h2>${fastingFields()}
     <h2 style="margin-top:18px">Your numbers</h2>
-    <div class="card">${bodyFields({ weight: false })}
+    <div class="card">${bodyFields({ weight: true })}
       <button class="ghost" type="button" data-action="weight">Update my weight</button>
     </div>
     <h2 style="margin-top:18px">Presets</h2>
     ${presetEditor()}
-    <div class="row" style="margin-top:14px">
-      <button class="primary" type="button" data-action="save-prefs">Save</button>
-      <button class="ghost" type="button" data-action="planner">Back to planner</button>
-    </div>
     ${footer()}</main>`;
 }
 
@@ -1002,8 +1252,10 @@ function weightIsDue() {
 function openWeightForm() {
   if (state.weightForm) return;
   const unit = state.profile?.unit || "lb";
+  const bounds = weightBounds(unit);
   const kg = state.weightLog.at(-1)?.kg || state.profile?.weightKg || 68;
-  state.weightForm = { unit, value: unit === "lb" ? round2(kgToLb(kg)) : round2(kg) };
+  const raw = unit === "lb" ? tenth(kgToLb(kg)) : tenth(kg);
+  state.weightForm = { unit, value: Math.min(bounds.max, Math.max(bounds.min, raw)) };
 }
 
 function setUnit(next) {
@@ -1012,25 +1264,30 @@ function setUnit(next) {
   render();
 }
 
-function updateRange(input) {
+function applyRange(key, end, raw) {
   const preset = activePreset();
-  const end = Number(input.dataset.end);
-  const value = Number(input.value);
-  const next = [...preset[input.dataset.range]];
+  if (!preset) return false;
+  const [min, max] = rangeBounds(key);
+  if (!(max > min)) return false;
+  const next = preset[key].map((item) => Math.round(Number(item)));
+  let value = Math.round(Number(raw));
+  value = Math.min(max, Math.max(min, value));
+  if (end === 0) value = Math.min(value, next[1]);
+  else value = Math.max(value, next[0]);
+  if (next[end] === value) return false;
   next[end] = value;
-  if (input.dataset.range === "cal") {
-    const cap = liveTarget();
-    next[1] = cap;
-    if (next[0] > cap) next[0] = cap;
-    input.value = String(next[0]);
-  } else if (next[0] > next[1]) next[end === 0 ? 1 : 0] = value;
-  preset[input.dataset.range] = next;
-  const minOut = document.querySelector(`[data-tick="${input.dataset.range}-min"]`);
-  const maxOut = document.querySelector(`[data-tick="${input.dataset.range}-max"]`);
-  if (minOut) writeTick(minOut, next[0]);
-  if (maxOut) writeTick(maxOut, next[1]);
-  const other = input.parentElement.parentElement.querySelector(`[data-end="${end === 0 ? 1 : 0}"]`);
-  if (other && Number(other.value) !== next[end === 0 ? 1 : 0]) other.value = next[end === 0 ? 1 : 0];
+  preset[key] = next;
+  if (key === "cal" && end === 1) preset.calChosen = next[1] < max;
+  paintDuo(key);
+  return true;
+}
+
+function rangeValueFromPointer(duo, key, clientX) {
+  const [min, max] = rangeBounds(key);
+  const rect = duo.getBoundingClientRect();
+  const usable = Math.max(1, rect.width - 22);
+  const x = Math.min(usable, Math.max(0, clientX - rect.left - 11));
+  return min + (x / usable) * (max - min);
 }
 
 function nextCheer() {
@@ -1044,6 +1301,7 @@ function nextCheer() {
 function onClick(event) {
   const button = event.target.closest("[data-action]");
   if (!button || button.disabled) return;
+  const editingPrefs = state.screen === "prefs";
   const action = button.dataset.action;
   if (action === "unit") setUnit(button.dataset.value);
   if (action === "back") {
@@ -1077,22 +1335,46 @@ function onClick(event) {
     state.activePresetId = copy.id;
     render();
   }
+  if (action === "shift-day") goDay(button.dataset.day);
   if (action === "surprise") {
-    if (todayPlan()) return;
+    if (focusKey() < todayKey()) return;
+    const saved = planFor(focusKey());
+    if (saved) return;
+    if (state.locks.lunch && state.locks.dinner) {
+      state.draft.error = "Unlock one meal and I'll shuffle the other.";
+      state.scrollTo = "#form-error";
+      render();
+      return;
+    }
+    const fixedSlot = state.locks.lunch ? "lunch" : state.locks.dinner ? "dinner" : "";
+    if (fixedSlot && !state.draft[fixedSlot]) {
+      state.draft.error = "Pick a meal before you lock it.";
+      state.scrollTo = "#form-error";
+      render();
+      return;
+    }
     const again = Boolean(state.draft.lunch || state.draft.dinner);
-    const result = surprisePair(state.meals, planningPreset(), state.mealWeights, recentMealIds(), state.pairKey);
+    const fixed = fixedSlot ? { slot: fixedSlot, meal: state.draft[fixedSlot] } : null;
+    const result = surprisePair(state.meals, planningPreset(), state.mealWeights, recentMealIds(), state.pairKey, fixed);
     if (result.error) {
       state.notice = result.error;
-      state.draft = { lunch: null, dinner: null, relaxed: false, error: result.error };
+      state.draft.relaxed = false;
+      state.draft.error = result.error;
       state.deal = "";
       state.scrollTo = "#form-error";
       render();
     } else {
-      state.draft = { lunch: result.lunch, dinner: result.dinner, relaxed: result.relaxed };
-      state.draftDay = todayKey();
-      state.pairKey = `${result.lunch.id}-${result.dinner.id}`;
+      state.draft = {
+        lunch: fixedSlot === "lunch" ? state.draft.lunch : result.lunch,
+        dinner: fixedSlot === "dinner" ? state.draft.dinner : result.dinner,
+        relaxed: result.relaxed,
+        error: "",
+      };
+      state.draftDay = focusKey();
+      state.pairKey = `${state.draft.lunch.id}-${state.draft.dinner.id}`;
       state.pickMode = false;
       state.justConfirmed = false;
+      state.dayNote = "";
       state.deal = again ? "again" : "first";
       const token = Date.now();
       state.dealToken = token;
@@ -1100,17 +1382,17 @@ function onClick(event) {
     }
   }
   if (action === "pick-mode") {
-    if (todayPlan()) return;
+    if (focusKey() < todayKey() || planFor(focusKey())) return;
     state.pickMode = true;
     state.deal = "";
     state.scrollTo = "#pick-panel";
     render();
   }
   if (action === "assign") {
-    if (todayPlan()) return;
+    if (focusKey() < todayKey() || planFor(focusKey())) return;
     const meal = findMeal(Number(button.dataset.id));
     state.draft[button.dataset.slot] = meal;
-    state.draftDay = todayKey();
+    state.draftDay = focusKey();
     state.draft.relaxed = false;
     state.draft.error = "";
     state.justConfirmed = false;
@@ -1118,9 +1400,17 @@ function onClick(event) {
     state.scrollTo = "#planner-meals";
     render();
   }
+  if (action === "lock-meal") {
+    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    const slot = button.dataset.slot;
+    if (!state.draft[slot]) return;
+    state.locks[slot] = !state.locks[slot];
+    render();
+  }
   if (action === "confirm") confirmDay();
   if (action === "unconfirm") unconfirmDay();
   if (action === "finish-day") finishDay();
+  if (action === "start-new-day") startNewDay();
   if (action === "toggle-macros") {
     state.macrosOpen = !state.macrosOpen;
     render();
@@ -1145,11 +1435,14 @@ function onClick(event) {
     state.scrollTo = "top";
   }
   if (action === "planner") {
+    const day = button.dataset.day === "tomorrow" ? tomorrowKey() : button.dataset.day === "yesterday" ? yesterdayKey() : button.dataset.day === "today" || button.dataset.scroll ? todayKey() : focusKey();
+    showDate(day);
     state.screen = "planner";
     state.cheer = "";
     state.scrollTo = button.dataset.scroll || "top";
   }
   if (action === "history") {
+    if (aheadDay()) showDate(todayKey());
     state.screen = "history";
     state.scrollTo = "top";
   }
@@ -1160,12 +1453,14 @@ function onClick(event) {
   }
   if (action === "weight-unit") {
     const kg = state.weightForm.unit === "lb" ? lbToKg(state.weightForm.value) : Number(state.weightForm.value);
-    state.weightForm.unit = button.dataset.value;
-    state.weightForm.value = state.weightForm.unit === "lb" ? round2(kgToLb(kg)) : round2(kg);
+    const next = button.dataset.value;
+    const bounds = weightBounds(next);
+    const raw = next === "lb" ? tenth(kgToLb(kg)) : tenth(kg);
+    state.weightForm.unit = next;
+    state.weightForm.value = Math.min(bounds.max, Math.max(bounds.min, raw));
     render();
   }
   if (action === "save-weight") saveWeight();
-  if (action === "save-prefs") savePrefs();
   if (action === "rate") {
     const draft = state.ratingDraft[button.dataset.plan][button.dataset.slot];
     draft[button.dataset.field] = Number(button.dataset.value);
@@ -1173,21 +1468,29 @@ function onClick(event) {
   }
   if (action === "save-rating") saveRating(button.dataset.plan, button.dataset.slot);
   if (["prefs", "weight", "home", "planner", "history", "plan-first"].includes(action)) render();
+  if (editingPrefs) persistPrefs();
 }
 
 function onInput(event) {
   const input = event.target;
   if (input.dataset.form) {
-    state.form[input.dataset.form] = input.type === "number" ? Number(input.value) : input.value;
+    const key = input.dataset.form;
+    const value = key === "weight" ? tenth(input.value) : Math.round(Number(input.value));
+    state.form[key] = value;
+    input.value = key === "weight" ? value.toFixed(1) : String(value);
+    const tick = document.querySelector(`[data-tick="form-${key}"]`);
+    if (tick) writeTick(tick, value);
+    if (key !== "deficit") paintDeficitSlider();
+    else paintDeficitWord();
     const box = document.querySelector(".bmi");
     if (box) {
       box.innerHTML = pictureBlock();
       playTicks(box);
     }
     paintCalMax();
+    if (state.screen === "prefs") persistPrefs();
     return;
   }
-  if (input.dataset.range) updateRange(input);
   if (input.dataset.level) {
     const labels = ["none", "less", "normal", "more"];
     activePreset()[input.dataset.level] = labels[Number(input.value)];
@@ -1201,7 +1504,14 @@ function onInput(event) {
   }
   if (input.dataset.window) state.fasting.windowStartsAt = input.value;
   if (input.dataset.presetName) activePreset().name = input.value;
-  if (input.dataset.weight) state.weightForm.value = Number(input.value);
+  if (input.dataset.weight) {
+    const bounds = weightBounds(state.weightForm.unit);
+    const value = Math.min(bounds.max, Math.max(bounds.min, tenth(input.value)));
+    state.weightForm.value = value;
+    input.value = value.toFixed(1);
+    const tick = document.querySelector('[data-tick="check-weight"]');
+    if (tick) writeTick(tick, value);
+  }
   if (input.id === "mealSearch") {
     state.search = input.value;
     const box = document.getElementById("mealResults");
@@ -1210,6 +1520,7 @@ function onInput(event) {
       playTicks(box);
     }
   }
+  if (state.screen === "prefs") persistPrefs();
 }
 
 function continueOnboard() {
@@ -1250,8 +1561,8 @@ function confirmDay() {
   const lunch = state.draft.lunch;
   const dinner = state.draft.dinner;
   if (!lunch || !dinner || lunch.id === dinner.id) return;
-  const date = todayKey();
-  if (todayPlan()) return;
+  const date = focusKey();
+  if (date < todayKey() || date > tomorrowKey() || planFor(date)) return;
   const previous = state.plans.find((plan) => plan.date === date);
   const same = previous && previous.lunchId === lunch.id && previous.dinnerId === dinner.id;
   const plan = {
@@ -1268,26 +1579,114 @@ function confirmDay() {
   savePlans(state.plans);
   state.justConfirmed = true;
   state.pickMode = false;
+  state.locks = { lunch: false, dinner: false };
   state.deal = "";
-  state.scrollTo = "#plan-actions";
+  state.dayNote = "";
+  state.scrollTo = aheadDay(date) ? "#rating-note" : "#plan-actions";
   render();
 }
 
 function unconfirmDay() {
-  const plan = todayPlan();
-  if (!plan || anyRated(plan)) return;
-  const date = todayKey();
-  state.plans = state.plans.filter((plan) => plan.date !== date);
+  const plan = planFor(focusKey());
+  if (!plan || anyRated(plan) || plan.date < todayKey()) return;
+  const date = plan.date;
+  state.plans = state.plans.filter((item) => item.date !== date);
   savePlans(state.plans);
   state.justConfirmed = false;
   state.ratingNote = "";
+  state.dayNote = "";
   state.scrollTo = "#plan-actions";
   render();
 }
 
+function showDate(date) {
+  const next = date && date <= tomorrowKey() ? date : todayKey();
+  state.focusDate = next;
+  if (state.draftDay === next) return;
+  const saved = planFor(next);
+  state.focusDate = next;
+  state.draftDay = next;
+  state.locks = { lunch: false, dinner: false };
+  state.pickMode = false;
+  state.justConfirmed = false;
+  state.deal = "";
+  state.dayNote = "";
+  state.draft = {
+    lunch: saved ? findMeal(saved.lunchId) : null,
+    dinner: saved ? findMeal(saved.dinnerId) : null,
+    relaxed: false,
+    error: "",
+  };
+}
+
+function paintDeficitWord() {
+  const profile = profileFromForm();
+  const cut = deficitWords(state.form.deficit, profile.calories);
+  const word = document.getElementById("deficitWord");
+  if (!word) return;
+  word.textContent = cut.name;
+  word.className = `cut-${cut.id}`;
+}
+
+function paintDeficitSlider() {
+  const profile = profileFromForm();
+  const max = deficitMax(profile.calories);
+  const input = document.getElementById("deficit");
+  const value = Math.min(max, Math.max(0, Math.round(state.form.deficit)));
+  state.form.deficit = value;
+  if (input) {
+    input.max = String(max);
+    input.value = String(value);
+  }
+  const tick = document.querySelector('[data-tick="form-deficit"]');
+  if (tick) writeTick(tick, value);
+  paintDeficitWord();
+}
+
+function startNewDay() {
+  if (!todayPlan()) {
+    showDate(todayKey());
+    state.screen = "planner";
+    state.scrollTo = "top";
+    render();
+    return;
+  }
+  if (planFor(tomorrowKey())) {
+    showDate(tomorrowKey());
+    state.dayNote = "Tomorrow is already planned. You can start another day when tomorrow arrives.";
+    state.screen = "planner";
+    state.scrollTo = "#day-note";
+    render();
+    return;
+  }
+  const today = todayPlan();
+  if (today && !today.finishedAt) {
+    today.finishedAt = new Date().toISOString();
+    savePlans(state.plans);
+  }
+  state.focusDate = tomorrowKey();
+  state.draft = { lunch: null, dinner: null, relaxed: false, error: "" };
+  state.draftDay = tomorrowKey();
+  state.locks = { lunch: false, dinner: false };
+  state.pickMode = false;
+  state.justConfirmed = false;
+  state.deal = "";
+  state.dayNote = "";
+  state.ratingNote = "";
+  state.screen = "planner";
+  state.scrollTo = "top";
+  render();
+}
+
 function finishDay() {
-  const plan = todayPlan();
+  const plan = planFor(focusKey());
   if (!plan) return;
+  if (plan.date > todayKey()) {
+    state.ratingNote = "You can only rate tomorrow.";
+    state.scrollTo = "#rating-note";
+    render();
+    return;
+  }
   plan.finishedAt = new Date().toISOString();
   savePlans(state.plans);
   state.justConfirmed = false;
@@ -1297,6 +1696,12 @@ function finishDay() {
 }
 
 function saveRating(planDate, slot) {
+  if (planDate > todayKey()) {
+    state.ratingNote = "You can only rate tomorrow.";
+    state.scrollTo = "#rating-note";
+    render();
+    return;
+  }
   const draft = state.ratingDraft[planDate]?.[slot];
   if (!draft?.overall || !draft.delicious || !draft.full || !draft.again) {
     state.ratingNote = "Tell me all four, sis, then I'll remember it.";
@@ -1318,9 +1723,9 @@ function saveRating(planDate, slot) {
 
 function saveWeight() {
   const value = Number(state.weightForm.value);
+  const bounds = weightBounds(state.weightForm.unit);
   const kg = state.weightForm.unit === "lb" ? lbToKg(value) : value;
-  const pounds = kgToLb(kg);
-  if (!value || kg < 32 || kg > 230 || pounds < 70 || pounds > 500) {
+  if (!value || value < bounds.min || value > bounds.max) {
     state.formError = "That weight looks off. Want to check it?";
     state.scrollTo = "#form-error";
     render();
@@ -1337,30 +1742,46 @@ function saveWeight() {
   state.form = formFromProfile(state.profile);
   state.formError = "";
   state.cheer = nextCheer();
-  state.weightForm = { unit: state.profile.unit, value: state.profile.unit === "lb" ? round2(kgToLb(kg)) : round2(kg) };
+  state.weightForm = { unit: state.profile.unit, value: tenth(state.profile.unit === "lb" ? kgToLb(kg) : kg) };
   state.screen = "weight";
   sessionStorage.removeItem("samoora.weightLater");
   render();
 }
 
-function savePrefs() {
-  const profile = profileFromForm();
-  profile.weightKg = state.profile.weightKg;
-  profile.calories = baselineCalories(profile.weightKg, profile.heightCm);
-  state.formError = validateBody(profile, { requireWeight: false });
-  if (state.formError) {
-    state.scrollTo = "#form-error";
-    return render();
+function paintFormError() {
+  const existing = document.getElementById("form-error");
+  if (!state.formError) {
+    existing?.remove();
+    return;
   }
-  state.profile = profile;
-  saveProfile(profile);
-  state.form = formFromProfile(profile);
-  clampCalMax();
+  if (existing) {
+    existing.textContent = state.formError;
+    return;
+  }
+  const fields = document.querySelector(".fields");
+  if (!fields) return;
+  const note = document.createElement("p");
+  note.id = "form-error";
+  note.className = "warn";
+  note.textContent = state.formError;
+  fields.appendChild(note);
+}
+
+function persistPrefs() {
+  if (!state.profile) return;
+  const profile = profileFromForm();
+  const editingWeight = Boolean(document.querySelector('[data-form="weight"]'));
+  if (!editingWeight) profile.weightKg = state.profile.weightKg;
+  profile.calories = baselineCalories(profile.weightKg, profile.heightCm);
+  state.formError = validateBody(profile, { requireWeight: editingWeight });
+  paintFormError();
+  if (!state.formError) {
+    state.profile = profile;
+    saveProfile(profile);
+  }
+  state.presets.forEach((preset) => sanitizePreset(preset));
   saveFasting(state.fasting);
   savePresets(state.presets, state.activePresetId);
-  state.screen = "planner";
-  state.scrollTo = "top";
-  render();
 }
 
 function recentMealIds() {
@@ -1373,20 +1794,30 @@ function recentMealIds() {
 }
 
 function restoreToday() {
-  const saved = state.plans.find((plan) => plan.date === todayKey());
+  const date = focusKey();
+  const saved = planFor(date);
   if (!saved) return;
-  state.draftDay = todayKey();
+  state.draftDay = date;
   state.draft = {
     lunch: findMeal(saved.lunchId),
     dinner: findMeal(saved.dinnerId),
     relaxed: false,
+    error: "",
   };
 }
 
 function expireDraft() {
-  if (!state.draftDay || state.draftDay === todayKey()) return;
-  state.draft = { lunch: null, dinner: null, relaxed: false, error: "" };
-  state.draftDay = todayKey();
+  const live = focusKey();
+  if (!state.draftDay || state.draftDay === live) return;
+  const saved = state.meals.length ? planFor(live) : null;
+  state.draft = {
+    lunch: saved ? findMeal(saved.lunchId) : null,
+    dinner: saved ? findMeal(saved.dinnerId) : null,
+    relaxed: false,
+    error: "",
+  };
+  state.draftDay = live;
+  state.locks = { lunch: false, dinner: false };
 }
 
 async function boot() {
@@ -1397,6 +1828,7 @@ async function boot() {
     const savedFasting = state.fasting;
     state.onboardStep = !state.profile ? 1 : savedFasting ? 3 : 2;
     if (!state.fasting) state.fasting = { on: true, hours: 16, windowStartsAt: "12:00" };
+    state.fasting.hours = Math.min(20, Math.max(12, Math.round(Number(state.fasting.hours) || 16)));
     if (state.profile?.heightCm && state.profile?.weightKg) {
       state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
       saveProfile(state.profile);
@@ -1443,6 +1875,47 @@ app.addEventListener("click", onClick);
 app.addEventListener("input", onInput);
 app.addEventListener("change", (event) => {
   const input = event.target;
-  if (input.dataset.fastHours || input.dataset.window || input.dataset.level || input.dataset.range) render();
+  if (input.dataset.fastHours || input.dataset.window || input.dataset.level) render();
+});
+app.addEventListener("pointerdown", (event) => {
+  const knob = event.target.closest(".knob");
+  if (!knob) return;
+  event.preventDefault();
+  const duo = knob.closest(".duo");
+  const key = duo.dataset.duo;
+  const end = Number(knob.dataset.end);
+  duo.dataset.activeEnd = String(end);
+  knob.style.zIndex = "4";
+  knob.focus({ preventScroll: true });
+  const knobRect = knob.getBoundingClientRect();
+  const grabOffset = event.clientX - (knobRect.left + knobRect.width / 2);
+  const move = (ev) => applyRange(key, end, rangeValueFromPointer(duo, key, ev.clientX - grabOffset));
+  const up = () => {
+    delete duo.dataset.activeEnd;
+    knob.removeEventListener("pointermove", move);
+    knob.removeEventListener("pointerup", up);
+    knob.removeEventListener("pointercancel", up);
+    if (state.screen === "prefs") persistPrefs();
+  };
+  knob.setPointerCapture(event.pointerId);
+  knob.addEventListener("pointermove", move);
+  knob.addEventListener("pointerup", up);
+  knob.addEventListener("pointercancel", up);
+});
+app.addEventListener("keydown", (event) => {
+  const knob = event.target.closest?.(".knob");
+  if (!knob) return;
+  let raw = null;
+  const key = knob.closest(".duo").dataset.duo;
+  const end = Number(knob.dataset.end);
+  const [min, max] = rangeBounds(key);
+  const current = activePreset()[key][end];
+  if (event.key === "ArrowRight" || event.key === "ArrowUp") raw = current + 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowDown") raw = current - 1;
+  else if (event.key === "Home") raw = min;
+  else if (event.key === "End") raw = max;
+  if (raw == null) return;
+  event.preventDefault();
+  if (applyRange(key, end, raw) && state.screen === "prefs") persistPrefs();
 });
 boot();

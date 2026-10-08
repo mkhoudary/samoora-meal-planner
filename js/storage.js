@@ -44,9 +44,9 @@ function preset(id, name, cal, protein, carbs, fat, heavier = "even") {
 
 export function starterPresets() {
   return [
-    preset("gentle", "Gentle", [900, 1400], [60, 160], [50, 220], [25, 90]),
-    preset("balanced", "Balanced", [1200, 1800], [80, 180], [70, 250], [30, 110]),
-    preset("hearty", "Hearty", [1500, 2300], [90, 200], [80, 280], [40, 130]),
+    preset("gentle", "Gentle", [0, 100000], [80, 120], [30, 40], [50, 70]),
+    preset("balanced", "Balanced", [0, 100000], [80, 120], [30, 40], [50, 70]),
+    preset("hearty", "Hearty", [0, 100000], [80, 120], [30, 40], [50, 70]),
   ];
 }
 

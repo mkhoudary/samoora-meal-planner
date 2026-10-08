@@ -36,6 +36,8 @@ body[data-theme="fasting"] {
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
   --ring: #3d4e64;
 }
+body[data-theme="fasting"] .band-light { color: #9ec4ea; }
+body[data-theme="fasting"] .bmi-pin.band-light { background: #9ec4ea; }
 
 * { box-sizing: border-box; }
 
@@ -214,13 +216,28 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
 .bmi-read { display: flex; align-items: baseline; gap: 10px; }
 .bmi-read .kicker { color: var(--muted); font-size: 0.78rem; font-weight: 800; letter-spacing: 0.14em; }
 .bmi-read strong { font-family: Fraunces, Georgia, serif; font-size: 2.4rem; line-height: 0.9; }
+.bmi-read em, #deficitWord, .energy-notes em {
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.95rem;
+}
+.band-light { color: #3d7ea6; }
+.band-fit { color: var(--sage); }
+.band-over { color: var(--gold); }
+.band-obese { color: var(--red); }
+.cut-even, .cut-gentle { color: var(--sage); }
+.cut-steady { color: var(--gold); }
+.cut-strong { color: var(--accent); }
+.cut-steep { color: var(--red); }
 
 .bmi-scale { position: relative; margin-top: 12px; }
 .bmi-zones { display: flex; height: 14px; border-radius: 99px; overflow: hidden; }
-.bmi-zones .z1 { background: color-mix(in srgb, var(--sage) 72%, var(--bg)); }
-.bmi-zones .z2 { background: color-mix(in srgb, var(--gold) 58%, var(--bg)); }
-.bmi-zones .z3 { background: color-mix(in srgb, var(--accent) 58%, var(--bg)); }
-.bmi-zones .z4 { background: color-mix(in srgb, var(--red) 50%, var(--bg)); }
+.bmi-zones .z1 { background: #7ea4c9; }
+.bmi-zones .z2 { background: var(--sage); }
+.bmi-zones .z3 { background: var(--gold); }
+.bmi-zones .z4 { background: var(--red); }
 .bmi-pin {
   position: absolute;
   top: 50%;
@@ -232,6 +249,10 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
   border: 3px solid var(--card);
   transform: translate(-50%, -50%);
 }
+.bmi-pin.band-light { background: #3d7ea6; }
+.bmi-pin.band-fit { background: var(--sage); }
+.bmi-pin.band-over { background: var(--gold); }
+.bmi-pin.band-obese { background: var(--red); }
 .bmi-marks { position: relative; height: 1.15rem; margin-top: 4px; }
 .bmi-marks span {
   position: absolute;
@@ -311,6 +332,59 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
 
 input[type="range"] { width: 100%; accent-color: var(--accent); }
 
+.duo-read {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-weight: 800;
+  margin-top: 4px;
+}
+.duo-dash { color: var(--muted); }
+.duo {
+  position: relative;
+  height: 28px;
+  margin-top: 6px;
+  touch-action: none;
+}
+.duo-rail {
+  position: absolute;
+  left: 11px;
+  right: 11px;
+  top: 11px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--line);
+}
+.duo-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 99px;
+  background: var(--sage);
+}
+.knob {
+  position: absolute;
+  top: 3px;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid var(--card);
+  background: var(--accent);
+  padding: 0;
+  cursor: grab;
+  touch-action: none;
+}
+.knob:active { cursor: grabbing; }
+.knob:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.duo-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
 .meter {
   border-radius: 22px;
   padding: 16px 18px;
@@ -338,6 +412,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .meter.red .bar span { background: var(--red); }
 
 .slot { margin: 0; color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.78rem; }
+
+.slot-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+.lock[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 
 .meal {
   display: flex;
@@ -455,6 +533,21 @@ a.primary {
 }
 
 .backbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+
+.day-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+.day-nav button { width: 100%; }
+.day-nav button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.day-block { margin: 18px 0; }
+.day-block h2 { margin-bottom: 8px; }
 
 .idiom {
   margin: 0;

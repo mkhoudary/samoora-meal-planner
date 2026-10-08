@@ -43,18 +43,28 @@ export function baselineCalories(weightKg, heightCm) {
   return round2(weightKg * perKg);
 }
 
-export function bmiWords(value) {
-  if (!value || Number.isNaN(value)) return "Enter your height and weight and I'll show the picture.";
-  const shown = Math.round(value * 10) / 10;
-  if (shown < 18.5) return "You're on the lighter side of the usual chart. It's only a picture, not a grade.";
-  if (shown < 25) return "This sits in the middle of the usual chart. Just a picture, sis.";
-  if (shown < 30) return "This sits a little above the middle of the usual chart. Still only a picture.";
-  return "This sits higher on the usual chart. It does not know you, and it stays right here.";
+export function bmiBand(value) {
+  const shown = round2(value);
+  if (!shown) return { id: "fit", name: "Fit" };
+  if (shown < 18.5) return { id: "light", name: "Light" };
+  if (shown < 25) return { id: "fit", name: "Fit" };
+  if (shown < 30) return { id: "over", name: "Over" };
+  return { id: "obese", name: "Obese" };
+}
+
+export function deficitWords(deficit, baseline) {
+  const cut = Math.max(0, Math.round(Number(deficit) || 0));
+  if (!cut) return { id: "even", name: "Even" };
+  const share = baseline > 0 ? cut / baseline : 1;
+  if (share < 0.1) return { id: "gentle", name: "Gentle" };
+  if (share < 0.2) return { id: "steady", name: "Steady" };
+  if (share < 0.3) return { id: "strong", name: "Strong" };
+  return { id: "steep", name: "Steep" };
 }
 
 export function formatWeight(kg, unit) {
   const value = unit === "lb" ? kgToLb(kg) : kg;
-  return `${round2(value).toFixed(2)} ${unit}`;
+  return `${(Math.round(value * 10) / 10).toFixed(1)} ${unit}`;
 }
 
 export function clockLabel(hhmm) {

@@ -88,18 +88,22 @@ function pickWeighted(items) {
   return items[items.length - 1];
 }
 
-export function surprisePair(meals, preset, weights, recentIds, avoidKey = "") {
+export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", fixed = null) {
   const usable = meals.filter((meal) => preferenceMultiplier(meal, preset) > 0);
-  if (usable.length < 2) {
+  const held = fixed?.meal || null;
+  if (!held && usable.length < 2) {
     return { error: "Every group is set to None, sis. Ease one slider and I'll try again." };
   }
+  const lunches = held && fixed.slot === "lunch" ? [held] : usable;
+  const dinners = held && fixed.slot === "dinner" ? [held] : usable;
   const share = preset.heavier === "lunch" ? 0.6 : preset.heavier === "dinner" ? 0.4 : 0.5;
   const scored = [];
-  for (let i = 0; i < usable.length; i += 1) {
-    for (let j = 0; j < usable.length; j += 1) {
-      if (i === j) continue;
-      const lunch = usable[i];
-      const dinner = usable[j];
+  lunches.forEach((lunch) => {
+    dinners.forEach((dinner) => {
+      if (lunch.id === dinner.id) return;
+      const lunchPref = held && fixed.slot === "lunch" ? 1 : preferenceMultiplier(lunch, preset);
+      const dinnerPref = held && fixed.slot === "dinner" ? 1 : preferenceMultiplier(dinner, preset);
+      if (!lunchPref || !dinnerPref) return;
       const calories = lunch.calories + dinner.calories;
       const penalty =
         boundPenalty(calories, preset.cal) +
@@ -108,9 +112,9 @@ export function surprisePair(meals, preset, weights, recentIds, avoidKey = "") {
         boundPenalty(lunch.fat + dinner.fat, preset.fat);
       const split = Math.abs(lunch.calories - calories * share) / Math.max(calories, 1);
       const base =
-        preferenceMultiplier(lunch, preset) *
+        lunchPref *
         (weights[lunch.id] || 1) *
-        preferenceMultiplier(dinner, preset) *
+        dinnerPref *
         (weights[dinner.id] || 1);
       const recent =
         (recentIds.has(lunch.id) ? 0.4 : 1) * (recentIds.has(dinner.id) ? 0.4 : 1);
@@ -121,7 +125,12 @@ export function surprisePair(meals, preset, weights, recentIds, avoidKey = "") {
         split,
         weight: Math.max(0.05, base * recent),
       });
-    }
+    });
+  });
+  if (!scored.length) {
+    return { error: held
+      ? "I need another meal to shuffle. Ease a slider or unlock this one."
+      : "Every group is set to None, sis. Ease one slider and I'll try again." };
   }
   let pool = scored.filter((pair) => pair.penalty === 0);
   let relaxed = false;
