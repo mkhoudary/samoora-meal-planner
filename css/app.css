@@ -199,7 +199,7 @@ input[type="number"], input[type="text"], input[type="time"], input[type="search
 }
 
 .bmi .kicker { display: block; color: var(--muted); font-size: 0.85rem; }
-.bmi strong { display: block; font-family: Fraunces, Georgia, serif; font-size: 1.8rem; line-height: 1.1; margin: 2px 0 6px; }
+.bmi > strong { display: block; font-family: Fraunces, Georgia, serif; font-size: 1.8rem; line-height: 1.1; margin: 2px 0 6px; }
 
 .warn { color: var(--red); font-weight: 800; }
 

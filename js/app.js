@@ -21,6 +21,7 @@ import {
   starterPresets,
 } from "./storage.js";
 import {
+  baselineCalories,
   bmi,
   bmiWords,
   cmToFtIn,
@@ -122,7 +123,7 @@ function formFromProfile(profile) {
     inches: profile ? imperial.inches : 5,
     cm: Math.round(heightCm),
     weight: unit === "lb" ? round1(kgToLb(weightKg)) : round1(weightKg),
-    calories: profile?.calories || 1800,
+    calories: baselineCalories(weightKg, heightCm),
     deficit: profile?.deficit ?? 300,
   };
 }
@@ -137,14 +138,9 @@ function profileFromForm() {
     unit,
     heightCm,
     weightKg,
-    calories: Number(state.form.calories),
+    calories: baselineCalories(weightKg, heightCm),
     deficit: Number(state.form.deficit),
   };
-}
-
-function currentBmi() {
-  const profile = profileFromForm();
-  return bmi(profile.weightKg, profile.heightCm);
 }
 
 function validateBody(profile, { requireWeight = true } = {}) {
@@ -157,8 +153,7 @@ function validateBody(profile, { requireWeight = true } = {}) {
     const pounds = kgToLb(profile.weightKg);
     if (requireWeight && (pounds < 70 || pounds > 500)) return "That weight looks off. Want to check it?";
   }
-  if (profile.calories < 500 || profile.calories > 6000) return "That calorie count looks off. Want to check it?";
-  if (profile.deficit < 0 || profile.deficit >= profile.calories) return "Leave yourself something to eat, sis. The deficit has to stay under your calories.";
+  if (profile.deficit < 0 || profile.deficit >= profile.calories) return "Leave yourself something to eat, sis. The deficit has to stay under your baseline.";
   return "";
 }
 
@@ -260,11 +255,19 @@ function fastingFields() {
   </div>`;
 }
 
+function pictureBlock() {
+  const profile = profileFromForm();
+  const picture = bmi(profile.weightKg, profile.heightCm);
+  const target = Math.round(profile.calories - Number(state.form.deficit));
+  return `<span class="kicker">BMI</span><strong>${picture ? picture.toFixed(1) : "—"}</strong>
+    <p class="quiet">${esc(bmiWords(picture))}</p>
+    <p>Baseline <strong>${profile.calories || "—"}</strong> calories. This comes from your BMI, and it stays calculated.</p>
+    <p>Lunch and dinner aim for <strong>${target > 0 ? target : "—"}</strong> calories.</p>`;
+}
+
 function bodyFields({ weight = true } = {}) {
   const form = state.form;
   const imperial = form.unit === "lb";
-  const picture = currentBmi();
-  const target = Math.round(Number(form.calories) - Number(form.deficit));
   return `<div class="fields">
     <div class="choice row">
       <button type="button" data-action="unit" data-value="lb" aria-pressed="${imperial}">Pounds</button>
@@ -275,12 +278,8 @@ function bodyFields({ weight = true } = {}) {
          <label>Inches<input id="inches" type="number" min="0" max="11" value="${esc(form.inches)}" data-form="inches"></label></div>`
       : `<label>Height in centimeters<input id="cm" type="number" min="120" max="230" value="${esc(form.cm)}" data-form="cm"></label>`}
     ${weight ? `<label>Weight in ${imperial ? "pounds" : "kilograms"}<input id="bodyWeight" type="number" min="1" step="0.1" value="${esc(form.weight)}" data-form="weight"></label>` : `<p>Latest weight: <strong>${esc(formatWeight(state.profile.weightKg, form.unit))}</strong></p>`}
-    <div class="split">
-      <label>Calories<input id="calories" type="number" min="500" max="6000" value="${esc(form.calories)}" data-form="calories"></label>
-      <label>Deficit<input id="deficit" type="number" min="0" step="1" value="${esc(form.deficit)}" data-form="deficit"></label>
-    </div>
-    <div class="bmi"><span class="kicker">BMI</span><strong>${picture ? picture.toFixed(1) : "—"}</strong><p class="quiet">${esc(bmiWords(picture))}</p>
-      <p>Lunch and dinner aim for <strong>${target > 0 ? target : "—"}</strong> calories.</p></div>
+    <label>Deficit<input id="deficit" type="number" min="0" step="1" value="${esc(form.deficit)}" data-form="deficit"></label>
+    <div class="bmi">${pictureBlock()}</div>
     ${state.formError ? `<p class="warn">${esc(state.formError)}</p>` : ""}
   </div>`;
 }
@@ -709,12 +708,8 @@ function onInput(event) {
   const input = event.target;
   if (input.dataset.form) {
     state.form[input.dataset.form] = input.type === "number" ? Number(input.value) : input.value;
-    const picture = currentBmi();
     const box = document.querySelector(".bmi");
-    if (box) {
-      const target = Math.round(Number(state.form.calories) - Number(state.form.deficit));
-      box.innerHTML = `<span class="kicker">BMI</span><strong>${picture ? picture.toFixed(1) : "—"}</strong><p class="quiet">${esc(bmiWords(picture))}</p><p>Lunch and dinner aim for <strong>${target > 0 ? target : "—"}</strong> calories.</p>`;
-    }
+    if (box) box.innerHTML = pictureBlock();
     return;
   }
   if (input.dataset.range) updateRange(input);
@@ -818,6 +813,7 @@ function saveWeight() {
   }
   state.profile.unit = state.weightForm.unit;
   state.profile.weightKg = kg;
+  state.profile.calories = baselineCalories(kg, state.profile.heightCm);
   saveProfile(state.profile);
   state.weightLog.push({ at: new Date().toISOString(), kg });
   saveWeightLog(state.weightLog);
@@ -869,6 +865,10 @@ async function boot() {
   const savedFasting = state.fasting;
   state.onboardStep = !state.profile ? 1 : savedFasting ? 3 : 2;
   if (!state.fasting) state.fasting = { on: true, hours: 16, windowStartsAt: "12:00" };
+  if (state.profile?.heightCm && state.profile?.weightKg) {
+    state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
+    saveProfile(state.profile);
+  }
   state.form = formFromProfile(state.profile);
   state.screen = state.onboarded ? "today" : "onboard";
   render();

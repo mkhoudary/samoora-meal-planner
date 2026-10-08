@@ -27,6 +27,16 @@ export function bmi(weightKg, heightCm) {
   return weightKg / (meters * meters);
 }
 
+export function baselineCalories(weightKg, heightCm) {
+  const shown = Math.round(bmi(weightKg, heightCm) * 10) / 10;
+  if (!shown || !weightKg) return 0;
+  let perKg = 22;
+  if (shown < 18.5) perKg = 30;
+  else if (shown < 25) perKg = 27;
+  else if (shown < 30) perKg = 24;
+  return Math.round(weightKg * perKg);
+}
+
 export function bmiWords(value) {
   if (!value || Number.isNaN(value)) return "Enter your height and weight and I'll show the picture.";
   const shown = Math.round(value * 10) / 10;
