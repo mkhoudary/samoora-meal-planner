@@ -2,9 +2,9 @@ export async function loadMeals() {
   const initSqlJs = globalThis.initSqlJs;
   if (!initSqlJs) throw new Error("SQLite could not start.");
   const SQL = await initSqlJs({
-    locateFile: (file) => `./vendor/${file}`,
+    locateFile: (file) => `./vendor/${file}?v=${globalThis.SAMOORA_UI || ""}`,
   });
-  const response = await fetch("./data/menu.sqlite");
+  const response = await fetch(`./data/menu.sqlite?v=${globalThis.SAMOORA_UI || ""}`);
   if (!response.ok) throw new Error("The menu database did not load.");
   const bytes = new Uint8Array(await response.arrayBuffer());
   const db = new SQL.Database(bytes);

@@ -1,5 +1,5 @@
 import { loadMeals } from "./db.js";
-import { fastingStatus, formatRemaining } from "./fasting.js";
+import { fastingStatus, fastReachesTomorrow, formatRemaining } from "./fasting.js";
 import {
   dayTarget,
   meterFor,
@@ -288,8 +288,13 @@ function validateBody(profile, { requireWeight = true } = {}) {
   return "";
 }
 
+function asset(path) {
+  const version = globalThis.SAMOORA_UI;
+  return version ? `${path}?v=${version}` : path;
+}
+
 function host(src, html) {
-  return `<div class="host"><img src="./assets/characters/${src}.png" alt="Mohammed"><div class="bubble">${html}</div></div>`;
+  return `<div class="host"><img src="${asset(`./assets/characters/${src}.png`)}" alt="Mohammed"><div class="bubble">${html}</div></div>`;
 }
 
 function privacyBlock() {
@@ -303,7 +308,7 @@ function footer() {
 function header() {
   const item = (action, label) =>
     `<button class="ghost" type="button" data-action="${action}" aria-pressed="${state.screen === action}">${label}</button>`;
-  return `<header class="top"><button class="logo-btn" type="button" data-action="home" aria-label="Home"><img class="logo" src="./assets/logo.png" alt="Samoora Meal Planner"></button><nav>
+  return `<header class="top"><button class="logo-btn" type="button" data-action="home" aria-label="Home"><img class="logo" src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"></button><nav>
     ${item("home", "Home")}
     ${item("planner", "Planner")}
     ${item("history", "History")}
@@ -317,6 +322,14 @@ function backBar() {
     <button class="primary" type="button" data-action="planner">Back to planner</button>
     <button class="ghost" type="button" data-action="home">Home</button>
   </div>`;
+}
+
+function todayHeld() {
+  return fastReachesTomorrow(state.fasting);
+}
+
+function planningBlocked(date = focusKey()) {
+  return date < todayKey() || (date === todayKey() && todayHeld());
 }
 
 function canShiftYesterday(date) {
@@ -425,7 +438,7 @@ function macroField(key, label) {
 function levelField(key, label, image) {
   const value = ["none", "less", "normal", "more"].indexOf(activePreset()[key]);
   const index = value < 0 ? 2 : value;
-  return `<div class="level"><img src="./assets/characters/${image}.png" alt="">
+  return `<div class="level"><img src="${asset(`./assets/characters/${image}.png`)}" alt="">
     <div><div class="pref-label"><strong>${label}</strong> · <span id="${key}Word">${LEVEL_LABELS[index]}</span></div>
       <input type="range" min="0" max="3" step="1" value="${index}" data-level="${key}" aria-label="${label}">
       <div class="ticks"><span>None</span><span>Less</span><span>Normal</span><span>More</span></div>
@@ -717,7 +730,7 @@ function swapButtonHTML() {
 }
 
 function ensureSwapButton(box) {
-  if (!box || focusKey() < todayKey() || planFor(focusKey())) return;
+  if (!box || planningBlocked() || planFor(focusKey())) return;
   if (!state.draft.lunch && !state.draft.dinner) return;
   box.classList.add("has-swap");
   if (box.querySelector(".swap-meals")) return;
@@ -784,7 +797,7 @@ function paintSurprise(token) {
   if (pick) pick.setAttribute("aria-pressed", "false");
   const idiomHost = document.querySelector(".idiom")?.closest(".host");
   const face = idiomHost?.querySelector("img");
-  if (face) face.src = "./assets/characters/chef.png";
+  if (face) face.src = asset("./assets/characters/chef.png");
   const next = mealHeights(lunch, dinner, meals.getBoundingClientRect().width);
   const current = [...meals.querySelectorAll(".meal")].map((card) => Math.ceil(card.offsetHeight));
   const hold = next.map((height, index) => Math.max(height, current[index] || 0));
@@ -1073,8 +1086,8 @@ function renderOnboard() {
     `<p>Set the day the way you like it. Calories stay under a whole number, and protein, carbs, and fat each have a range. You can change this whenever you want.</p>`,
   ];
   const brand = step === 1
-    ? `<div class="hero-logo"><img src="./assets/logo.png" alt="Samoora Meal Planner"><p class="love">Made with Love by Mohammed</p></div>`
-    : `<header class="top"><img class="logo" src="./assets/logo.png" alt="Samoora Meal Planner"></header>`;
+    ? `<div class="hero-logo"><img src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"><p class="love">Made with Love by Mohammed</p></div>`
+    : `<header class="top"><img class="logo" src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"></header>`;
   return `${brand}
     <main class="wrap"><div class="steps">${[1, 2, 3].map((item) => `<span class="${item <= step ? "on" : ""}"></span>`).join("")}</div>
     <h1>${titles[step - 1]}</h1>
@@ -1115,6 +1128,12 @@ function fastingBlock(status) {
 }
 
 function homeToday(plan) {
+  if (todayHeld()) {
+    return `<section class="day-block" id="home-today"><h2>Today</h2>
+      ${plan ? `<div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { rating: plan.ratings?.lunch, scope: "home-today-" })}${mealCard(findMeal(plan.dinnerId), "Dinner", { rating: plan.ratings?.dinner, scope: "home-today-" })}</div>` : ""}
+      <p class="quiet">${plan ? "This fast reaches tomorrow, so today's meals stay as they are." : "This fast reaches tomorrow, so today stays unplanned."}</p>
+    </section>`;
+  }
   if (!plan) {
     return `<section class="day-block" id="home-today"><h2>Today</h2>
       <p class="quiet">The day is open. Plan lunch and dinner when you're ready.</p>
@@ -1171,7 +1190,7 @@ function renderHome() {
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${waiting.length ? `<p class="banner"><button class="ghost" type="button" data-action="history">History</button> is holding meals that still want a rating.</p>` : ""}
     ${homeToday(plan)}
-    ${homeTomorrow(tomorrow, Boolean(plan))}
+    ${homeTomorrow(tomorrow, Boolean(plan) || todayHeld())}
     ${footer()}</main>`;
 }
 
@@ -1181,6 +1200,8 @@ function renderPlanner() {
   const date = focusKey();
   const ahead = aheadDay(date);
   const past = date < todayKey();
+  const held = date === todayKey() && todayHeld();
+  const sealed = past || held;
   const saved = planFor(date);
   const locked = Boolean(saved?.confirmedAt);
   const finished = Boolean(saved?.finishedAt);
@@ -1207,13 +1228,14 @@ function renderPlanner() {
     ${fastingBlock(status)}
     ${dayNav(date)}
     ${ahead ? `<p class="warn" id="rating-note">You can only rate tomorrow.</p>` : ""}
+    ${held ? `<p class="warn" id="fast-hold">${saved ? "This fast reaches tomorrow, so today's meals stay as they are." : "This fast reaches tomorrow, so today stays unplanned."}</p>` : ""}
     ${fastingNow ? `<h2>For when you eat</h2>` : ""}
     ${past ? "" : host(state.pickMode && !locked ? "grocery" : "chef", `<p class="idiom">${esc(idiom)}</p>`)}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${state.dayNote ? `<p class="warn" id="day-note">${esc(state.dayNote)}</p>` : ""}
     ${state.justConfirmed ? `<p class="banner">Saved for ${esc(dayLabel)}. ${ahead ? "You can only rate tomorrow." : "Rate the meals when you've eaten them, then start a new day."}</p>` : ""}
     ${!ahead && finished ? `<p class="banner">${esc(prettyDate(date))} keeps this one plan.</p>` : ""}
-    ${locked && date === todayKey() && !anyRated(saved) ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
+    ${locked && date === todayKey() && !anyRated(saved) && !held ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
     ${state.draft.error ? `<p class="warn" id="form-error">${esc(state.draft.error)}</p>` : ""}
     ${state.draft.relaxed ? `<p class="banner">This is the closest pair I could find. The meter tells the truth.</p>` : ""}
     <div id="plan-meter">${meterHTML(total)}</div>
@@ -1226,13 +1248,13 @@ function renderPlanner() {
     </div>
     ${state.macrosOpen ? macrosPanel(lunch, dinner) : ""}
     <div class="meals-slot">
-      <div id="planner-meals" class="meals${past || locked || (!lunch && !dinner) ? "" : " has-swap"}">
-        ${mealCard(lunch, "Lunch", { lockable: !locked && !past })}
-        ${past || locked || (!lunch && !dinner) ? "" : swapButtonHTML()}
-        ${mealCard(dinner, "Dinner", { lockable: !locked && !past })}
+      <div id="planner-meals" class="meals${sealed || locked || (!lunch && !dinner) ? "" : " has-swap"}">
+        ${mealCard(lunch, "Lunch", { lockable: !locked && !sealed })}
+        ${sealed || locked || (!lunch && !dinner) ? "" : swapButtonHTML()}
+        ${mealCard(dinner, "Dinner", { lockable: !locked && !sealed })}
       </div>
     </div>
-    ${past ? "" : `<div class="row" id="plan-actions" style="margin:14px 0">
+    ${held ? `<div class="row" id="plan-actions" style="margin:14px 0"><button class="primary" type="button" data-action="planner" data-day="tomorrow">Plan tomorrow</button></div>` : past ? "" : `<div class="row" id="plan-actions" style="margin:14px 0">
       <button class="primary mode" type="button" data-action="surprise" ${locked ? "disabled" : ""}>Surprise Me</button>
       <button class="ghost mode" type="button" data-action="pick-mode" aria-pressed="${state.pickMode && !locked}" ${locked ? "disabled" : ""}>I'll pick</button>
       ${locked && !anyRated(saved)
@@ -1242,7 +1264,7 @@ function renderPlanner() {
           : `<button class="primary" type="button" data-action="confirm" ${ready ? "" : "disabled"}>Confirm</button>`}
     </div>`}
     ${sameMeal ? `<p class="warn">Pick two different meals, sis.</p>` : ""}
-    ${state.pickMode && !locked ? `<section class="card" id="pick-panel">
+    ${state.pickMode && !locked && !sealed ? `<section class="card" id="pick-panel">
       ${eatenHistoryHTML()}
       <label style="margin-top:16px">Search the menu<input id="mealSearch" type="search" value="${esc(state.search)}" placeholder="Chicken, salmon, a chef..."></label>
       <div id="mealResults" class="results">${resultsHTML()}</div>
@@ -1315,7 +1337,7 @@ function render() {
   state.scrollTo = null;
   const y = window.scrollY;
   if (state.screen === "loading") {
-    app.innerHTML = `<div class="hero-logo"><img src="./assets/logo.png" alt="Samoora Meal Planner"><p class="love">Setting the table...</p></div>`;
+    app.innerHTML = `<div class="hero-logo"><img src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"><p class="love">Setting the table...</p></div>`;
   } else if (state.screen === "error") {
     app.innerHTML = `<main class="wrap"><h1>I couldn't open the menu</h1><p>${esc(state.error)}</p></main>`;
   } else if (!state.onboarded || state.screen === "onboard") app.innerHTML = renderOnboard();
@@ -1443,7 +1465,7 @@ function onClick(event) {
   }
   if (action === "shift-day") goDay(button.dataset.day);
   if (action === "surprise") {
-    if (focusKey() < todayKey()) return;
+    if (planningBlocked()) return;
     const saved = planFor(focusKey());
     if (saved) return;
     if (state.locks.lunch && state.locks.dinner) {
@@ -1492,14 +1514,14 @@ function onClick(event) {
     }
   }
   if (action === "pick-mode") {
-    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    if (planningBlocked() || planFor(focusKey())) return;
     state.pickMode = true;
     state.deal = "";
     state.scrollTo = "#pick-panel";
     render();
   }
   if (action === "assign") {
-    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    if (planningBlocked() || planFor(focusKey())) return;
     const meal = findMeal(Number(button.dataset.id));
     if (!meal || isPork(meal)) return;
     state.draft[button.dataset.slot] = meal;
@@ -1512,7 +1534,7 @@ function onClick(event) {
     render();
   }
   if (action === "swap-meals") {
-    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    if (planningBlocked() || planFor(focusKey())) return;
     if (!state.draft.lunch && !state.draft.dinner) return;
     const lunchMeal = state.draft.lunch;
     state.draft.lunch = state.draft.dinner;
@@ -1528,7 +1550,7 @@ function onClick(event) {
     render();
   }
   if (action === "lock-meal") {
-    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    if (planningBlocked() || planFor(focusKey())) return;
     const slot = button.dataset.slot;
     if (!state.draft[slot]) return;
     state.locks[slot] = !state.locks[slot];
@@ -1562,7 +1584,8 @@ function onClick(event) {
     state.scrollTo = "top";
   }
   if (action === "planner") {
-    const day = button.dataset.day === "tomorrow" ? tomorrowKey() : button.dataset.day === "yesterday" ? yesterdayKey() : button.dataset.day === "today" || button.dataset.scroll ? todayKey() : focusKey();
+    let day = button.dataset.day === "tomorrow" ? tomorrowKey() : button.dataset.day === "yesterday" ? yesterdayKey() : button.dataset.day === "today" || button.dataset.scroll ? todayKey() : focusKey();
+    if (todayHeld() && day === todayKey() && button.dataset.day !== "today" && !button.dataset.scroll) day = tomorrowKey();
     showDate(day);
     state.screen = "planner";
     state.cheer = "";
@@ -1575,6 +1598,7 @@ function onClick(event) {
   }
   if (action === "plan-first") {
     sessionStorage.setItem("samoora.weightLater", "1");
+    if (todayHeld()) showDate(tomorrowKey());
     state.screen = "planner";
     state.scrollTo = "top";
   }
@@ -1685,6 +1709,7 @@ function continueOnboard() {
   saveOnboarded(true);
   state.onboarded = true;
   state.screen = "planner";
+  if (todayHeld()) showDate(tomorrowKey());
   state.scrollTo = "top";
   render();
 }
@@ -1694,7 +1719,7 @@ function confirmDay() {
   const dinner = state.draft.dinner;
   if (!lunch || !dinner || lunch.id === dinner.id) return;
   const date = focusKey();
-  if (date < todayKey() || date > tomorrowKey() || planFor(date)) return;
+  if (date < todayKey() || date > tomorrowKey() || planFor(date) || (date === todayKey() && todayHeld())) return;
   const previous = state.plans.find((plan) => plan.date === date);
   const same = previous && previous.lunchId === lunch.id && previous.dinnerId === dinner.id;
   const plan = {
@@ -1720,7 +1745,7 @@ function confirmDay() {
 
 function unconfirmDay() {
   const plan = planFor(focusKey());
-  if (!plan || anyRated(plan) || plan.date < todayKey()) return;
+  if (!plan || anyRated(plan) || plan.date < todayKey() || (plan.date === todayKey() && todayHeld())) return;
   const date = plan.date;
   state.plans = state.plans.filter((item) => item.date !== date);
   savePlans(state.plans);
@@ -1798,7 +1823,7 @@ function paintDeficitSlider() {
 
 function startNewDay() {
   if (!todayPlan()) {
-    showDate(todayKey());
+    showDate(todayHeld() ? tomorrowKey() : todayKey());
     state.screen = "planner";
     state.scrollTo = "top";
     render();

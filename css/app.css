@@ -479,15 +479,15 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .clock-block {
   display: grid;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: 250px 1fr;
   gap: 16px;
   align-items: center;
   margin-bottom: 18px;
 }
 
 .ring {
-  width: 190px;
-  height: 190px;
+  width: 240px;
+  height: 240px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -495,38 +495,49 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 }
 
 .ring-hole {
-  width: 148px;
-  height: 148px;
+  position: relative;
+  width: 188px;
+  height: 188px;
   border-radius: 50%;
   background: var(--bg);
   display: grid;
   place-items: center;
   text-align: center;
-  padding: 10px;
+  padding: 0;
+}
+
+.ring-hole > span {
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 26px;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  color: var(--muted);
 }
 
 .ring-hole strong {
   font-family: Fraunces, Georgia, serif;
-  font-size: 1.45rem;
+  font-size: 2.45rem;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 2px;
   line-height: 1;
 }
 
 .clock-part {
   display: flex;
   align-items: baseline;
-  justify-content: flex-end;
-  gap: 3px;
-  min-width: 4.6ch;
+  justify-content: center;
+  gap: 4px;
   font-variant-numeric: tabular-nums;
 }
 
 .clock-part small {
   font-family: Nunito, sans-serif;
-  font-size: 0.72rem;
+  font-size: 0.95rem;
   font-weight: 800;
   letter-spacing: 0.04em;
 }

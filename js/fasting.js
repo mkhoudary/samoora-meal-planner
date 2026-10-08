@@ -36,6 +36,15 @@ export function fastingStatus(fasting, now = new Date()) {
   };
 }
 
+export function fastReachesTomorrow(fasting, now = new Date()) {
+  const status = fastingStatus(fasting, now);
+  if (!status.enabled || status.phase !== "fasting") return false;
+  const [hourText, minuteText] = String(fasting?.windowStartsAt || "12:00").split(":");
+  const start = (Number(hourText) || 0) * 60 + (Number(minuteText) || 0);
+  const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+  return start <= nowMin;
+}
+
 function minutesToHHMM(mins) {
   const h = Math.floor(mins / 60) % 24;
   const m = Math.floor(mins % 60);
