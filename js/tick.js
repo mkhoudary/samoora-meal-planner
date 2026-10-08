@@ -16,7 +16,7 @@ export function formatTick(value, digits) {
   return number.toFixed(digits);
 }
 
-export function tickHTML(key, value, digits = 0, suffix = "") {
+export function tickHTML(key, value, digits = 2, suffix = "") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   return `<span class="tick" data-tick="${key}" data-value="${number}" data-digits="${digits}" data-suffix="${suffix}">${formatTick(number, digits)}${suffix}</span>`;
@@ -37,7 +37,7 @@ function finish(key, value, cancel) {
   paint(key, value);
   shown.set(key, value);
   nodes(key).forEach((el) => {
-    el.style.fontSize = "";
+    el.style.transform = "";
     el.classList.remove("tick-up", "tick-down");
   });
   if (runs.get(key) === cancel) runs.delete(key);
@@ -84,7 +84,7 @@ function animateKey(key, from, to) {
     shown.set(key, snapped);
     const pop = 1 + 0.62 * Math.sin(Math.PI * t);
     nodes(key).forEach((el) => {
-      el.style.fontSize = `${pop.toFixed(3)}em`;
+      el.style.transform = `scale(${pop.toFixed(3)})`;
     });
     if (t < 1) frame = requestAnimationFrame(step);
     else finish(key, to, cancel);

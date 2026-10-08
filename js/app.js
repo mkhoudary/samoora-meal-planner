@@ -26,6 +26,7 @@ import {
   baselineCalories,
   bmi,
   cmToFtIn,
+  round2,
   clockLabel,
   formatWeight,
   ftInToCm,
@@ -79,8 +80,8 @@ function esc(value) {
   }[char]));
 }
 
-function round1(value) {
-  return Math.round(Number(value) * 10) / 10;
+function fixed2(value) {
+  return round2(value).toFixed(2);
 }
 
 function todayKey(date = new Date()) {
@@ -142,8 +143,8 @@ function formFromProfile(profile) {
     unit,
     feet: profile ? imperial.feet : 5,
     inches: profile ? imperial.inches : 5,
-    cm: Math.round(heightCm),
-    weight: unit === "lb" ? round1(kgToLb(weightKg)) : round1(weightKg),
+    cm: round2(heightCm),
+    weight: unit === "lb" ? round2(kgToLb(weightKg)) : round2(weightKg),
     calories: baselineCalories(weightKg, heightCm),
     deficit: profile?.deficit ?? 300,
   };
@@ -304,7 +305,7 @@ function fastingFields() {
 function liveTarget() {
   if (state.form && (state.screen === "prefs" || state.screen === "onboard")) {
     const profile = profileFromForm();
-    return Math.max(0, Math.round((profile.calories || 0) - Number(profile.deficit || 0)));
+    return Math.max(0, round2((profile.calories || 0) - Number(profile.deficit || 0)));
   }
   return Math.max(0, dayTarget(state.profile));
 }
@@ -345,10 +346,10 @@ function pictureBlock() {
   clampCalMax();
   const profile = profileFromForm();
   const picture = bmi(profile.weightKg, profile.heightCm);
-  const shown = picture ? Math.round(picture * 10) / 10 : 0;
+  const shown = picture ? round2(picture) : 0;
   const baseline = profile.calories || 0;
-  const deficit = Math.max(0, Number(state.form.deficit) || 0);
-  const target = Math.max(0, Math.round(baseline - deficit));
+  const deficit = Math.max(0, round2(state.form.deficit));
+  const target = Math.max(0, round2(baseline - deficit));
   const scaleMin = 15;
   const scaleSpan = 25;
   const pin = shown ? Math.min(100, Math.max(0, ((shown - scaleMin) / scaleSpan) * 100)) : null;
@@ -357,14 +358,14 @@ function pictureBlock() {
     return ((edge - start) / scaleSpan) * 100;
   });
   const keep = baseline > 0 ? Math.min(1, target / baseline) : 0;
-  const label = shown ? `BMI ${shown.toFixed(1)}. Day maximum ${target} calories.` : "Add height and weight.";
+  const label = shown ? `BMI ${fixed2(shown)}. Day maximum ${fixed2(target)} calories.` : "Add height and weight.";
   return `<div class="bmi-board" role="img" aria-label="${esc(label)}">
-    <div class="bmi-read"><span class="kicker">BMI</span><strong>${shown ? tickHTML("bmi", shown, 1) : "—"}</strong></div>
+    <div class="bmi-read"><span class="kicker">BMI</span><strong>${shown ? tickHTML("bmi", shown) : "—"}</strong></div>
     <div class="bmi-scale">
       <div class="bmi-zones">${zones.map((width, index) => `<span class="z${index + 1}" style="width:${width}%"></span>`).join("")}</div>
       ${pin === null ? "" : `<i class="bmi-pin" style="left:${pin}%"></i>`}
     </div>
-    <div class="bmi-marks"><span style="left:14%">18.5</span><span style="left:40%">25</span><span style="left:60%">30</span></div>
+    <div class="bmi-marks"><span style="left:14%">18.50</span><span style="left:40%">25.00</span><span style="left:60%">30.00</span></div>
     <div class="energy">
       <div class="energy-track" aria-hidden="true"><span class="energy-keep" style="width:${keep * 100}%"></span><span class="energy-cut" style="width:${(1 - keep) * 100}%"></span></div>
       <div class="energy-fig">${target > 0 ? tickHTML("day-target", target) : "—"}<small>max</small></div>
@@ -382,11 +383,11 @@ function bodyFields({ weight = true } = {}) {
       <button type="button" data-action="unit" data-value="kg" aria-pressed="${!imperial}">Kilograms</button>
     </div>
     ${imperial
-      ? `<div class="split"><label>Feet<input id="feet" type="number" min="4" max="7" value="${esc(form.feet)}" data-form="feet"></label>
-         <label>Inches<input id="inches" type="number" min="0" max="11" value="${esc(form.inches)}" data-form="inches"></label></div>`
-      : `<label>Height in centimeters<input id="cm" type="number" min="120" max="230" value="${esc(form.cm)}" data-form="cm"></label>`}
-    ${weight ? `<label>Weight in ${imperial ? "pounds" : "kilograms"}<input id="bodyWeight" type="number" min="1" step="0.1" value="${esc(form.weight)}" data-form="weight"></label>` : `<p>Latest weight: <strong>${tickHTML("latest-weight", form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg, 1, ` ${form.unit}`)}</strong></p>`}
-    <label>Deficit<input id="deficit" type="number" min="0" step="1" value="${esc(form.deficit)}" data-form="deficit"></label>
+      ? `<div class="split"><label>Feet<input id="feet" type="number" min="4" max="7" step="0.01" value="${fixed2(form.feet)}" data-form="feet"></label>
+         <label>Inches<input id="inches" type="number" min="0" max="11" step="0.01" value="${fixed2(form.inches)}" data-form="inches"></label></div>`
+      : `<label>Height in centimeters<input id="cm" type="number" min="120" max="230" step="0.01" value="${fixed2(form.cm)}" data-form="cm"></label>`}
+    ${weight ? `<label>Weight in ${imperial ? "pounds" : "kilograms"}<input id="bodyWeight" type="number" min="1" step="0.01" value="${fixed2(form.weight)}" data-form="weight"></label>` : `<p>Latest weight: <strong>${tickHTML("latest-weight", form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg, 2, ` ${form.unit}`)}</strong></p>`}
+    <label>Deficit<input id="deficit" type="number" min="0" step="0.01" value="${fixed2(form.deficit)}" data-form="deficit"></label>
     <div class="bmi">${pictureBlock()}</div>
     ${state.formError ? `<p class="warn" id="form-error">${esc(state.formError)}</p>` : ""}
   </div>`;
@@ -394,7 +395,7 @@ function bodyFields({ weight = true } = {}) {
 
 function cookLink(meal) {
   if (!meal?.url) return "";
-  return `<a class="primary" href="${esc(meal.url)}" target="_blank" rel="noopener">View on CookUnity</a>`;
+  return `<div class="cook-row"><a class="primary" href="${esc(meal.url)}" target="_blank" rel="noopener">View on CookUnity</a></div>`;
 }
 
 function nutrientBits(meal) {
@@ -418,7 +419,7 @@ function addNutrients(left, right) {
 
 function nutrientCells(bits, prefix, empty = false) {
   if (empty) return "<td>—</td><td>—</td><td>—</td><td>—</td>";
-  return `<td>${tickHTML(`${prefix}-cal`, bits.calories)}</td><td>${tickHTML(`${prefix}-protein`, bits.protein, 1)}g</td><td>${tickHTML(`${prefix}-carbs`, bits.carbs, 1)}g</td><td>${tickHTML(`${prefix}-fat`, bits.fat, 1)}g</td>`;
+  return `<td>${tickHTML(`${prefix}-cal`, bits.calories)}</td><td>${tickHTML(`${prefix}-protein`, bits.protein)}g</td><td>${tickHTML(`${prefix}-carbs`, bits.carbs)}g</td><td>${tickHTML(`${prefix}-fat`, bits.fat)}g</td>`;
 }
 
 function macrosPanel(lunch, dinner) {
@@ -456,9 +457,9 @@ function mealCard(meal, slot, { rating = undefined, scope = "" } = {}) {
     <p class="quiet">${esc(meal.chef || "CookUnity")}</p>
     <div class="stats">
       <span>${tickHTML(`${prefix}-cal`, meal.calories)} cal</span>
-      <span>${tickHTML(`${prefix}-protein`, meal.protein, 1)}g protein</span>
-      <span>${tickHTML(`${prefix}-carbs`, meal.carbs, 1)}g carbs</span>
-      <span>${tickHTML(`${prefix}-fat`, meal.fat, 1)}g fat</span>
+      <span>${tickHTML(`${prefix}-protein`, meal.protein)}g protein</span>
+      <span>${tickHTML(`${prefix}-carbs`, meal.carbs)}g carbs</span>
+      <span>${tickHTML(`${prefix}-fat`, meal.fat)}g fat</span>
     </div>
     <div class="pills">${pills.map((pill) => `<span>${esc(pill)}</span>`).join("")}</div>
     ${meal.cookunity_labels ? `<p class="note">${esc(meal.cookunity_labels)}</p>` : ""}
@@ -472,7 +473,7 @@ function meterHTML(total) {
   const target = dayTarget(state.profile);
   const meter = meterFor(total, target);
   const width = target ? Math.min(100, Math.round((total / target) * 100)) : 0;
-  const delta = Math.round((total || 0) - target);
+  const delta = round2((total || 0) - target);
   const pose = meter.tone === "green" ? "thumbs" : meter.tone === "gold" ? "thinking" : meter.tone === "red" ? "calm" : "clipboard";
   const line = meter.tone === "green"
     ? "You're inside the plan. I like this."
@@ -508,7 +509,7 @@ function meterHTML(total) {
 
 function resultRow(meal, extra = "") {
   return `<div class="result">
-    <div><strong>${esc(meal.name)}</strong><div class="quiet">${Math.round(meal.calories)} cal · ${esc(meal.chef || "")}${extra}</div></div>
+    <div><strong>${esc(meal.name)}</strong><div class="quiet">${fixed2(meal.calories)} cal · ${esc(meal.chef || "")}${extra}</div></div>
     <div class="row">
       <button class="tiny" type="button" data-action="assign" data-slot="lunch" data-id="${meal.id}">Lunch</button>
       <button class="tiny" type="button" data-action="assign" data-slot="dinner" data-id="${meal.id}">Dinner</button>
@@ -610,7 +611,7 @@ function chartSVG(log, unit = state.profile.unit) {
     const x = xOf(point.at.getTime());
     const y = yOf(point.value);
     return `<circle cx="${x}" cy="${y}" r="${last ? 7 : 5}" fill="${last ? "#c4623a" : "#5f8f62"}"><title>${esc(point.label)}</title></circle>
-      ${labeled.has(index) ? `<text class="tick" data-tick="log-${point.at.getTime()}" data-value="${round1(point.value)}" data-digits="1" data-suffix=" ${unit}" x="${x}" y="${y - 28}" text-anchor="middle">${esc(`${round1(point.value)} ${unit}`)}</text><text x="${x}" y="${y - 14}" text-anchor="middle">${esc(stamp(point.at))}</text>` : ""}`;
+      ${labeled.has(index) ? `<text class="tick" data-tick="log-${point.at.getTime()}" data-value="${round2(point.value)}" data-digits="2" data-suffix=" ${unit}" x="${x}" y="${y - 28}" text-anchor="middle">${esc(`${fixed2(point.value)} ${unit}`)}</text><text x="${x}" y="${y - 14}" text-anchor="middle">${esc(stamp(point.at))}</text>` : ""}`;
   }).join("");
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Weight over time">
     <path d="${line}" fill="none" stroke="#c4623a" stroke-width="3"/>
@@ -634,7 +635,7 @@ function weightScreen({ weekly = false } = {}) {
         <button type="button" data-action="weight-unit" data-value="kg" aria-pressed="${form.unit === "kg"}">Kilograms</button>
       </div>
       <label>Weight in ${form.unit}
-        <input id="weightNow" type="number" min="1" step="0.1" value="${esc(form.value)}" data-weight="1">
+        <input id="weightNow" type="number" min="1" step="0.01" value="${fixed2(form.value)}" data-weight="1">
       </label>
       ${state.formError ? `<p class="warn" id="form-error">${esc(state.formError)}</p>` : ""}
       <div class="row">
@@ -680,7 +681,7 @@ function renderOnboard() {
 
 function clockFace(mins) {
   const total = Math.max(0, Math.round(mins));
-  return `${tickHTML("fast-h", Math.floor(total / 60))}h ${tickHTML("fast-m", total % 60)}m`;
+  return `${tickHTML("fast-h", Math.floor(total / 60), 2)}h ${tickHTML("fast-m", total % 60, 2)}m`;
 }
 
 function fastingBlock(status) {
@@ -728,7 +729,7 @@ function renderPlanner() {
   const finished = Boolean(saved?.finishedAt);
   const lunch = state.draft.lunch;
   const dinner = state.draft.dinner;
-  const total = Math.round((lunch?.calories || 0) + (dinner?.calories || 0));
+  const total = round2((lunch?.calories || 0) + (dinner?.calories || 0));
   const sameMeal = lunch && dinner && lunch.id === dinner.id;
   const ready = lunch && dinner && !sameMeal && !locked;
   const idiom = idiomFor(todayKey());
@@ -870,7 +871,7 @@ function openWeightForm() {
   if (state.weightForm) return;
   const unit = state.profile?.unit || "lb";
   const kg = state.weightLog.at(-1)?.kg || state.profile?.weightKg || 68;
-  state.weightForm = { unit, value: unit === "lb" ? round1(kgToLb(kg)) : round1(kg) };
+  state.weightForm = { unit, value: unit === "lb" ? round2(kgToLb(kg)) : round2(kg) };
 }
 
 function setUnit(next) {
@@ -1032,7 +1033,7 @@ function onClick(event) {
   if (action === "weight-unit") {
     const kg = state.weightForm.unit === "lb" ? lbToKg(state.weightForm.value) : Number(state.weightForm.value);
     state.weightForm.unit = button.dataset.value;
-    state.weightForm.value = state.weightForm.unit === "lb" ? round1(kgToLb(kg)) : round1(kg);
+    state.weightForm.value = state.weightForm.unit === "lb" ? round2(kgToLb(kg)) : round2(kg);
     render();
   }
   if (action === "save-weight") saveWeight();
@@ -1206,7 +1207,7 @@ function saveWeight() {
   state.form = formFromProfile(state.profile);
   state.formError = "";
   state.cheer = nextCheer();
-  state.weightForm = { unit: state.profile.unit, value: state.profile.unit === "lb" ? round1(kgToLb(kg)) : round1(kg) };
+  state.weightForm = { unit: state.profile.unit, value: state.profile.unit === "lb" ? round2(kgToLb(kg)) : round2(kg) };
   state.screen = "weight";
   sessionStorage.removeItem("samoora.weightLater");
   render();

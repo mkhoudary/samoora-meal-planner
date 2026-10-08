@@ -339,7 +339,19 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .slot { margin: 0; color: var(--accent); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.78rem; }
 
+.meal {
+  display: flex;
+  flex-direction: column;
+}
+
 .meal h3 { font-size: 1.35rem; }
+
+.cook-row {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.cook-row a.primary { margin-top: 0; }
 
 .stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 
@@ -529,7 +541,7 @@ a.primary {
 .tick {
   display: inline-block;
   font-variant-numeric: tabular-nums;
-  transform-origin: center bottom;
+  transform-origin: center;
   line-height: 1;
 }
 

@@ -42,7 +42,7 @@ export function ratingWords(weight) {
 
 export function dayTarget(profile) {
   if (!profile) return 0;
-  return Math.round(Number(profile.calories) - Number(profile.deficit));
+  return Math.round((Number(profile.calories) - Number(profile.deficit)) * 100) / 100;
 }
 
 export function meterFor(total, target) {
@@ -56,7 +56,7 @@ export function meterFor(total, target) {
       detail: "Lunch and dinner together.",
     };
   }
-  const delta = Math.round(total - target);
+  const delta = Math.round((total - target) * 100) / 100;
   if (delta <= 0) {
     return {
       tone: "green",

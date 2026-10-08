@@ -21,6 +21,12 @@ export function ftInToCm(feet, inches) {
   return (Number(feet) * 12 + Number(inches)) * 2.54;
 }
 
+export function round2(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.round((number + Number.EPSILON) * 100) / 100;
+}
+
 export function bmi(weightKg, heightCm) {
   const meters = heightCm / 100;
   if (!meters) return 0;
@@ -28,13 +34,13 @@ export function bmi(weightKg, heightCm) {
 }
 
 export function baselineCalories(weightKg, heightCm) {
-  const shown = Math.round(bmi(weightKg, heightCm) * 10) / 10;
+  const shown = round2(bmi(weightKg, heightCm));
   if (!shown || !weightKg) return 0;
   let perKg = 22;
   if (shown < 18.5) perKg = 30;
   else if (shown < 25) perKg = 27;
   else if (shown < 30) perKg = 24;
-  return Math.round(weightKg * perKg);
+  return round2(weightKg * perKg);
 }
 
 export function bmiWords(value) {
@@ -48,7 +54,7 @@ export function bmiWords(value) {
 
 export function formatWeight(kg, unit) {
   const value = unit === "lb" ? kgToLb(kg) : kg;
-  return `${Math.round(value * 10) / 10} ${unit}`;
+  return `${round2(value).toFixed(2)} ${unit}`;
 }
 
 export function clockLabel(hhmm) {
