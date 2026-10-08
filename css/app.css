@@ -39,7 +39,7 @@ body[data-theme="fasting"] {
 
 * { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; scroll-padding-top: 96px; }
+html { scroll-behavior: smooth; scroll-padding-top: 96px; overflow-anchor: none; }
 
 body {
   margin: 0;
@@ -353,17 +353,24 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .cook-row a.primary { margin-top: 0; }
 
-.stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.stats { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 
-.stats span, .pills span {
+.stats > span, .pills > span {
   background: var(--bg);
+  color: var(--muted);
   border-radius: 999px;
-  padding: 4px 10px;
+  padding: 2px 7px;
   font-weight: 800;
-  font-size: 0.92rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
 }
 
-.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.stats > span, .pills.macros > span {
+  background: color-mix(in srgb, var(--sage) 20%, var(--card));
+  color: var(--sage);
+}
+
+.pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 
 .note { font-size: 0.95rem; color: var(--muted); }
 
@@ -461,8 +468,10 @@ a.primary {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 8px;
+  margin: 16px 0;
 }
+
+.plan-head h2 { margin: 0; }
 
 .icon-btn {
   display: inline-flex;
@@ -503,18 +512,64 @@ a.primary {
 
 .history-day { margin-bottom: 14px; }
 .history-day .meals { margin-bottom: 12px; }
-.rate-block { display: grid; gap: 8px; margin-top: 8px; }
+.rate-block { margin-top: 18px; }
+
+.ratings > h2 { margin-bottom: 16px; }
+
+.ratings > div + div { margin-top: 28px; }
+
+.ratings h3 { margin: 0 0 12px; }
+
+.ratings p { margin: 10px 0 0; }
+
+.ratings .stars { margin-top: 8px; }
+
+.ratings .primary { margin: 16px 0 0; }
+
+#day-next { margin: 16px 0 4px; }
 
 #step-focus, #planner-meals, #pick-panel, #plan-actions, #day-rating, #weight-form, #form-error, #day-next {
   scroll-margin-top: 96px;
 }
 
-.meals.deal .meal { animation: deal-in 0.55s ease both; }
-.meals.deal .meal:nth-child(2) { animation-delay: 0.12s; }
+.meals-slot { position: relative; }
 
-@keyframes deal-in {
-  from { opacity: 0; transform: translateY(22px); }
-  to { opacity: 1; transform: none; }
+.meal.skeleton { pointer-events: none; }
+
+.skeleton .bone {
+  display: block;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--line) 0%, color-mix(in srgb, var(--card) 72%, var(--line)) 45%, var(--line) 100%);
+  background-size: 220% 100%;
+  animation: meal-shimmer 0.8s ease-in-out infinite;
+}
+
+.skeleton .bone-title { height: 22px; width: 72%; margin: 12px 0 8px; }
+.skeleton .bone-line { height: 12px; width: 40%; }
+.skeleton .stats .bone,
+.skeleton .pills .bone { width: 92px; height: 28px; padding: 0; background: none; }
+.skeleton .stats .bone,
+.skeleton .pills .bone,
+.skeleton .bone-btn {
+  background: linear-gradient(90deg, var(--line) 0%, color-mix(in srgb, var(--card) 72%, var(--line)) 45%, var(--line) 100%);
+  background-size: 220% 100%;
+}
+.skeleton .bone-btn { width: 168px; height: 42px; }
+
+.deal-note {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  margin: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+@keyframes meal-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
 }
 
 .banner {
@@ -553,5 +608,5 @@ body[data-theme="fasting"] .tick-up { color: #ff6b6b; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .meals.deal .meal { animation: none; }
+  .skeleton .bone { animation: none; }
 }

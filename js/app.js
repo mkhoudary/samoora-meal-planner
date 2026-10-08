@@ -447,6 +447,120 @@ function ratingSummary(rating, prefix) {
     <p class="note">${esc(ratingWords(weightFromRating(rating)))}</p>`;
 }
 
+function tagRow(text, kind) {
+  const items = String(text || "").split(";").map((item) => item.trim()).filter(Boolean);
+  if (!items.length) return "";
+  return `<div class="pills ${kind}">${items.map((item) => `<span>${esc(item)}</span>`).join("")}</div>`;
+}
+
+function mealSkeleton(slot, height) {
+  const bars = (count) => Array.from({ length: count }, () => `<span class="bone"></span>`).join("");
+  return `<article class="meal skeleton" style="min-height:${height}px" aria-hidden="true">
+    <p class="slot">${slot}</p>
+    <span class="bone bone-title"></span>
+    <span class="bone bone-line"></span>
+    <div class="stats">${bars(4)}</div>
+    <div class="pills">${bars(3)}</div>
+    <span class="bone bone-line"></span>
+    <div class="cook-row"><span class="bone bone-btn"></span></div>
+  </article>`;
+}
+
+function withMealHeight(html, height) {
+  return html.replace("<article class=\"meal\"", `<article class="meal" style="min-height:${height}px"`);
+}
+
+function mealHeights(lunch, dinner, width) {
+  const probe = document.createElement("div");
+  probe.className = "meals";
+  probe.style.cssText = `position:fixed;visibility:hidden;pointer-events:none;left:-10000px;top:0;width:${width}px`;
+  probe.innerHTML = `${mealCard(lunch, "Lunch")}${mealCard(dinner, "Dinner")}`;
+  document.body.appendChild(probe);
+  const heights = [...probe.querySelectorAll(".meal")].map((card) => Math.ceil(card.offsetHeight));
+  probe.remove();
+  return heights;
+}
+
+let surpriseTimer = 0;
+
+function paintSurprise(token) {
+  const meals = document.querySelector("#planner-meals");
+  if (!meals) return false;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  const lunch = state.draft.lunch;
+  const dinner = state.draft.dinner;
+  const meterRoot = document.getElementById("plan-meter");
+  if (meterRoot) {
+    const fresh = document.createElement("div");
+    fresh.innerHTML = meterHTML(round2((lunch?.calories || 0) + (dinner?.calories || 0)));
+    const nextHost = fresh.querySelector(".host");
+    const nextMeter = fresh.querySelector(".meter");
+    const host = meterRoot.querySelector(".host");
+    const meter = meterRoot.querySelector(".meter");
+    if (host && nextHost) {
+      const face = host.querySelector("img");
+      const nextFace = nextHost.querySelector("img");
+      if (face && nextFace && face.getAttribute("src") !== nextFace.getAttribute("src")) face.src = nextFace.getAttribute("src");
+      const bubble = host.querySelector(".bubble");
+      const nextBubble = nextHost.querySelector(".bubble");
+      if (bubble && nextBubble) bubble.innerHTML = nextBubble.innerHTML;
+    }
+    if (meter && nextMeter) {
+      meter.className = nextMeter.className;
+      meter.innerHTML = nextMeter.innerHTML;
+    }
+    playTicks(meterRoot);
+  }
+  if (state.macrosOpen && document.getElementById("macro-detail")) {
+    document.getElementById("macro-detail").outerHTML = macrosPanel(lunch, dinner);
+    playTicks(document.getElementById("macro-detail"));
+  }
+  const confirm = document.querySelector("#plan-actions [data-action='confirm']");
+  if (confirm) confirm.disabled = !(lunch && dinner && lunch.id !== dinner.id);
+  document.getElementById("pick-panel")?.remove();
+  const pick = document.querySelector("[data-action='pick-mode']");
+  if (pick) pick.setAttribute("aria-pressed", "false");
+  const idiomHost = document.querySelector(".idiom")?.closest(".host");
+  const face = idiomHost?.querySelector("img");
+  if (face) face.src = "./assets/characters/chef.png";
+  const next = mealHeights(lunch, dinner, meals.getBoundingClientRect().width);
+  const current = [...meals.querySelectorAll(".meal")].map((card) => Math.ceil(card.offsetHeight));
+  const hold = next.map((height, index) => Math.max(height, current[index] || 0));
+  const reveal = () => {
+    if (state.dealToken !== token || !document.querySelector("#planner-meals")) return;
+    const box = document.querySelector("#planner-meals");
+    box.innerHTML = `${withMealHeight(mealCard(lunch, "Lunch"), hold[0])}${withMealHeight(mealCard(dinner, "Dinner"), hold[1])}`;
+    box.classList.remove("loading");
+    state.deal = "";
+    playTicks(box);
+    const detail = document.getElementById("macro-detail");
+    if (detail) playTicks(detail);
+  };
+  window.clearTimeout(surpriseTimer);
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce) {
+    reveal();
+    return true;
+  }
+  meals.classList.add("loading");
+  meals.innerHTML = `${mealSkeleton("Lunch", hold[0])}${mealSkeleton("Dinner", hold[1])}`;
+  const note = state.draft.relaxed
+    ? "This is the closest pair I could find."
+    : state.deal === "again" ? "Another pair." : "";
+  document.querySelector(".deal-note")?.remove();
+  if (note) {
+    const flag = document.createElement("p");
+    flag.className = "banner deal-note";
+    flag.textContent = note;
+    meals.parentElement.appendChild(flag);
+  }
+  surpriseTimer = window.setTimeout(() => {
+    document.querySelector(".deal-note")?.remove();
+    reveal();
+  }, 420);
+  return true;
+}
+
 function mealCard(meal, slot, { rating = undefined, scope = "" } = {}) {
   if (!meal) {
     return `<article class="meal"><p class="slot">${slot}</p><p class="quiet">Nothing here yet.</p></article>`;
@@ -462,8 +576,8 @@ function mealCard(meal, slot, { rating = undefined, scope = "" } = {}) {
       <span>${tickHTML(`${prefix}-fat`, meal.fat)}g fat</span>
     </div>
     <div class="pills">${pills.map((pill) => `<span>${esc(pill)}</span>`).join("")}</div>
-    ${meal.cookunity_labels ? `<p class="note">${esc(meal.cookunity_labels)}</p>` : ""}
-    ${meal.nutrition_labels ? `<p class="note">${esc(meal.nutrition_labels)}</p>` : ""}
+    ${tagRow(meal.cookunity_labels, "")}
+    ${tagRow(meal.nutrition_labels, "macros")}
     ${rating !== undefined ? ratingSummary(rating, prefix) : ""}
     ${cookLink(meal)}
   </article>`;
@@ -575,7 +689,7 @@ function ratingCard(plan, { heading = true } = {}) {
       <button class="primary" type="button" data-action="save-rating" data-plan="${esc(plan.date)}" data-slot="${slot}">Save this rating</button>
     </div>`;
   };
-  return `<section class="${heading ? "card" : "rate-block"}">${heading ? `<h2>${esc(prettyDate(plan.date))}</h2>` : ""}${block("lunch", lunch)}${block("dinner", dinner)}</section>`;
+  return `<section class="${heading ? "card ratings" : "rate-block ratings"}">${heading ? `<h2>${esc(prettyDate(plan.date))}</h2>` : ""}${block("lunch", lunch)}${block("dinner", dinner)}</section>`;
 }
 
 function chartSVG(log, unit = state.profile.unit) {
@@ -740,13 +854,12 @@ function renderPlanner() {
     ${fastingNow ? `<h2>For when you eat</h2>` : ""}
     ${host(state.pickMode && !locked ? "grocery" : "chef", `<p class="idiom">${esc(idiom)}</p>`)}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
-    ${state.deal === "again" ? `<p class="banner deal-note">Another pair.</p>` : ""}
     ${state.justConfirmed ? `<p class="banner">Saved for ${esc(prettyDate(todayKey()))}. Rate the meals when you've eaten them, then start a new day.</p>` : ""}
     ${finished ? `<p class="banner">${esc(prettyDate(todayKey()))} keeps this one plan.</p>` : ""}
     ${locked ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
     ${state.draft.error ? `<p class="warn" id="form-error">${esc(state.draft.error)}</p>` : ""}
     ${state.draft.relaxed ? `<p class="banner">This is the closest pair I could find. The meter tells the truth.</p>` : ""}
-    ${meterHTML(total)}
+    <div id="plan-meter">${meterHTML(total)}</div>
     <div class="plan-head">
       <h2>Today's meals</h2>
       <button class="icon-btn" type="button" data-action="toggle-macros" aria-expanded="${state.macrosOpen}" aria-label="${state.macrosOpen ? "Hide macros" : "Show macros"}">
@@ -755,7 +868,9 @@ function renderPlanner() {
       </button>
     </div>
     ${state.macrosOpen ? macrosPanel(lunch, dinner) : ""}
-    <div id="planner-meals" class="meals${state.deal ? " deal" : ""}">${mealCard(lunch, "Lunch")}${mealCard(dinner, "Dinner")}</div>
+    <div class="meals-slot">
+      <div id="planner-meals" class="meals">${mealCard(lunch, "Lunch")}${mealCard(dinner, "Dinner")}</div>
+    </div>
     <div class="row" id="plan-actions" style="margin:14px 0">
       <button class="primary mode" type="button" data-action="surprise" ${locked ? "disabled" : ""}>Surprise Me</button>
       <button class="ghost mode" type="button" data-action="pick-mode" aria-pressed="${state.pickMode && !locked}" ${locked ? "disabled" : ""}>I'll pick</button>
@@ -954,23 +1069,17 @@ function onClick(event) {
       state.draft = { lunch: null, dinner: null, relaxed: false, error: result.error };
       state.deal = "";
       state.scrollTo = "#form-error";
+      render();
     } else {
       state.draft = { lunch: result.lunch, dinner: result.dinner, relaxed: result.relaxed };
       state.pairKey = `${result.lunch.id}-${result.dinner.id}`;
+      state.pickMode = false;
+      state.justConfirmed = false;
       state.deal = again ? "again" : "first";
-      state.scrollTo = "#planner-meals";
+      const token = Date.now();
+      state.dealToken = token;
+      if (!paintSurprise(token)) render();
     }
-    state.pickMode = false;
-    state.justConfirmed = false;
-    const token = Date.now();
-    state.dealToken = token;
-    render();
-    window.setTimeout(() => {
-      if (state.dealToken !== token) return;
-      state.deal = "";
-      document.querySelector("#planner-meals")?.classList.remove("deal");
-      document.querySelector(".deal-note")?.remove();
-    }, 900);
   }
   if (action === "pick-mode") {
     if (todayPlan()) return;
