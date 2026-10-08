@@ -4,6 +4,7 @@ import {
   dayTarget,
   meterFor,
   ratingWords,
+  isPork,
   surprisePair,
   weightFromRating,
 } from "./planner.js";
@@ -71,6 +72,7 @@ const state = {
   focusDate: "",
   locks: { lunch: false, dinner: false },
   dayNote: "",
+  surpriseSeen: new Set(),
 };
 
 const app = document.querySelector("#app");
@@ -204,6 +206,16 @@ function deficitMax(baseline) {
   return Math.max(0, Math.min(1000, room));
 }
 
+function deficitLimit(baseline) {
+  return Math.floor(deficitMax(baseline) / 5) * 5;
+}
+
+function snapDeficit(value, baseline) {
+  const max = deficitLimit(baseline);
+  const stepped = Math.round((Number(value) || 0) / 5) * 5;
+  return Math.min(max, Math.max(0, stepped));
+}
+
 function formFromProfile(profile) {
   const unit = profile?.unit || "lb";
   const heightCm = profile?.heightCm || 165;
@@ -219,7 +231,7 @@ function formFromProfile(profile) {
     cm: Math.min(height.cm?.[1] ?? 200, Math.max(height.cm?.[0] ?? 140, Math.round(heightCm))),
     weight,
     calories: baselineCalories(weightKg, heightCm),
-    deficit: Math.round(profile?.deficit ?? 300),
+    deficit: snapDeficit(profile?.deficit ?? 300, baselineCalories(weightKg, heightCm)),
   };
 }
 
@@ -234,7 +246,7 @@ function profileFromForm() {
     heightCm,
     weightKg,
     calories: baselineCalories(weightKg, heightCm),
-    deficit: Number(state.form.deficit),
+    deficit: snapDeficit(state.form.deficit, baselineCalories(weightKg, heightCm)),
   };
 }
 
@@ -320,9 +332,9 @@ function goDay(which) {
 }
 
 const MACRO_LIMITS = {
-  protein: [80, 120],
-  carbs: [30, 40],
-  fat: [50, 70],
+  protein: [0, 200],
+  carbs: [0, 200],
+  fat: [0, 200],
 };
 
 function calorieCap() {
@@ -527,7 +539,7 @@ function pictureBlock() {
   const shown = picture ? round2(picture) : 0;
   const band = bmiBand(shown);
   const baseline = profile.calories || 0;
-  const deficit = Math.max(0, Math.min(deficitMax(baseline), Math.round(state.form.deficit)));
+  const deficit = snapDeficit(state.form.deficit, baseline);
   const target = Math.max(0, round2(baseline - deficit));
   const scaleMin = 15;
   const scaleSpan = 25;
@@ -567,8 +579,8 @@ function bodyFields({ weight = true } = {}) {
   const height = heightBounds(form.unit);
   const bounds = weightBounds(form.unit);
   const profile = profileFromForm();
-  const maxCut = deficitMax(profile.calories);
-  const deficit = Math.min(maxCut, Math.max(0, Math.round(form.deficit)));
+  const maxCut = deficitLimit(profile.calories);
+  const deficit = snapDeficit(form.deficit, profile.calories);
   const cut = deficitWords(deficit, profile.calories);
   return `<div class="fields">
     <div class="choice row">
@@ -582,7 +594,7 @@ function bodyFields({ weight = true } = {}) {
       ? bodySlider("weight", `Weight in ${imperial ? "pounds" : "kilograms"}`, bounds.min, bounds.max, form.weight, 1)
       : `<p>Latest weight: <strong>${tickHTML("latest-weight", tenth(form.unit === "lb" ? kgToLb(state.profile.weightKg) : state.profile.weightKg), 1, ` ${form.unit}`)}</strong></p>`}
     <label><span>Deficit ${tickHTML("form-deficit", deficit, 0)} · <em id="deficitWord" class="cut-${cut.id}">${cut.name}</em></span>
-      <input id="deficit" type="range" min="0" max="${maxCut}" step="1" value="${deficit}" data-form="deficit">
+      <input id="deficit" type="range" min="0" max="${maxCut}" step="5" value="${deficit}" data-form="deficit">
     </label>
     <div class="bmi">${pictureBlock()}</div>
     ${state.formError ? `<p class="warn" id="form-error">${esc(state.formError)}</p>` : ""}
@@ -662,6 +674,22 @@ function mealSkeleton(slot, height) {
   </article>`;
 }
 
+function swapButtonHTML() {
+  return `<button class="swap-meals" type="button" data-action="swap-meals" aria-label="Switch lunch and dinner"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M16 3l4 4-4 4"/><path d="M20 17H4"/><path d="M8 13l-4 4 4 4"/></svg></button>`;
+}
+
+function ensureSwapButton(box) {
+  if (!box || focusKey() < todayKey() || planFor(focusKey())) return;
+  if (!state.draft.lunch && !state.draft.dinner) return;
+  box.classList.add("has-swap");
+  if (box.querySelector(".swap-meals")) return;
+  const shell = document.createElement("div");
+  shell.innerHTML = swapButtonHTML();
+  const cards = [...box.querySelectorAll(":scope > .meal")];
+  if (cards[1]) cards[1].before(shell.firstElementChild);
+  else box.appendChild(shell.firstElementChild);
+}
+
 function withMealHeight(html, height) {
   return html.replace("<article class=\"meal\"", `<article class="meal" style="min-height:${height}px"`);
 }
@@ -722,13 +750,30 @@ function paintSurprise(token) {
   const next = mealHeights(lunch, dinner, meals.getBoundingClientRect().width);
   const current = [...meals.querySelectorAll(".meal")].map((card) => Math.ceil(card.offsetHeight));
   const hold = next.map((height, index) => Math.max(height, current[index] || 0));
+  const slots = [
+    ["lunch", "Lunch", lunch],
+    ["dinner", "Dinner", dinner],
+  ];
+  const swapSlot = (box, index, html) => {
+    const cards = [...box.querySelectorAll(":scope > .meal")];
+    const shell = document.createElement("div");
+    shell.innerHTML = html;
+    const fresh = shell.firstElementChild;
+    if (cards[index]) cards[index].replaceWith(fresh);
+    else box.appendChild(fresh);
+    return fresh;
+  };
   const reveal = () => {
     if (state.dealToken !== token || !document.querySelector("#planner-meals")) return;
     const box = document.querySelector("#planner-meals");
-    box.innerHTML = `${withMealHeight(mealCard(lunch, "Lunch", { lockable: true }), hold[0])}${withMealHeight(mealCard(dinner, "Dinner", { lockable: true }), hold[1])}`;
+    slots.forEach(([slot, label, meal], index) => {
+      if (state.locks[slot]) return;
+      const fresh = swapSlot(box, index, withMealHeight(mealCard(meal, label, { lockable: true }), hold[index]));
+      playTicks(fresh);
+    });
     box.classList.remove("loading");
     state.deal = "";
-    playTicks(box);
+    ensureSwapButton(box);
     const detail = document.getElementById("macro-detail");
     if (detail) playTicks(detail);
   };
@@ -739,7 +784,15 @@ function paintSurprise(token) {
     return true;
   }
   meals.classList.add("loading");
-  meals.innerHTML = `${mealSkeleton("Lunch", hold[0])}${mealSkeleton("Dinner", hold[1])}`;
+  slots.forEach(([slot, label, meal], index) => {
+    const cards = [...meals.querySelectorAll(":scope > .meal")];
+    if (state.locks[slot]) {
+      if (cards[index]) cards[index].style.minHeight = `${hold[index]}px`;
+      return;
+    }
+    swapSlot(meals, index, mealSkeleton(label, hold[index]));
+  });
+  ensureSwapButton(meals);
   const shufflingOne = state.locks.lunch !== state.locks.dinner && (state.locks.lunch || state.locks.dinner);
   const note = state.draft.relaxed
     ? "This is the closest pair I could find."
@@ -840,7 +893,7 @@ function eatenHistoryHTML() {
     [["lunch", plan.lunchId], ["dinner", plan.dinnerId]].forEach(([slot, id]) => {
       if (seen.has(id)) return;
       const meal = findMeal(id);
-      if (!meal) return;
+      if (!meal || isPork(meal)) return;
       seen.add(id);
       rows.push({ meal, date: plan.date, slot });
     });
@@ -855,6 +908,7 @@ function eatenHistoryHTML() {
 function resultsHTML() {
   const query = state.search.trim().toLowerCase();
   const matches = state.meals.filter((meal) => {
+    if (isPork(meal)) return false;
     if (!query) return true;
     return `${meal.name} ${meal.chef}`.toLowerCase().includes(query);
   });
@@ -999,9 +1053,18 @@ function renderOnboard() {
     ${footer()}</main>`;
 }
 
+function remainingParts(mins) {
+  const total = Math.max(0, Math.round(Number(mins) * 60));
+  return {
+    hours: Math.floor(total / 3600),
+    minutes: Math.floor((total % 3600) / 60),
+    seconds: total % 60,
+  };
+}
+
 function clockFace(mins) {
-  const total = Math.max(0, Math.round(mins));
-  return `${tickHTML("fast-h", Math.floor(total / 60), 2)}h ${tickHTML("fast-m", total % 60, 2)}m`;
+  const { hours, minutes, seconds } = remainingParts(mins);
+  return `<span class="clock-main">${tickHTML("fast-h", hours, 2)}h ${tickHTML("fast-m", minutes, 2)}m</span><span class="clock-seconds">${tickHTML("fast-s", seconds, 0)}s</span>`;
 }
 
 function fastingBlock(status) {
@@ -1124,7 +1187,11 @@ function renderPlanner() {
     </div>
     ${state.macrosOpen ? macrosPanel(lunch, dinner) : ""}
     <div class="meals-slot">
-      <div id="planner-meals" class="meals">${mealCard(lunch, "Lunch", { lockable: !locked && !past })}${mealCard(dinner, "Dinner", { lockable: !locked && !past })}</div>
+      <div id="planner-meals" class="meals${past || locked || (!lunch && !dinner) ? "" : " has-swap"}">
+        ${mealCard(lunch, "Lunch", { lockable: !locked && !past })}
+        ${past || locked || (!lunch && !dinner) ? "" : swapButtonHTML()}
+        ${mealCard(dinner, "Dinner", { lockable: !locked && !past })}
+      </div>
     </div>
     ${past ? "" : `<div class="row" id="plan-actions" style="margin:14px 0">
       <button class="primary mode" type="button" data-action="surprise" ${locked ? "disabled" : ""}>Surprise Me</button>
@@ -1355,7 +1422,9 @@ function onClick(event) {
     }
     const again = Boolean(state.draft.lunch || state.draft.dinner);
     const fixed = fixedSlot ? { slot: fixedSlot, meal: state.draft[fixedSlot] } : null;
-    const result = surprisePair(state.meals, planningPreset(), state.mealWeights, recentMealIds(), state.pairKey, fixed);
+    if (state.draft.lunch?.id) state.surpriseSeen.add(state.draft.lunch.id);
+    if (state.draft.dinner?.id) state.surpriseSeen.add(state.draft.dinner.id);
+    const result = surprisePair(state.meals, planningPreset(), state.mealWeights, recentMealIds(), state.pairKey, fixed, state.surpriseSeen);
     if (result.error) {
       state.notice = result.error;
       state.draft.relaxed = false;
@@ -1372,6 +1441,8 @@ function onClick(event) {
       };
       state.draftDay = focusKey();
       state.pairKey = `${state.draft.lunch.id}-${state.draft.dinner.id}`;
+      state.surpriseSeen.add(state.draft.lunch.id);
+      state.surpriseSeen.add(state.draft.dinner.id);
       state.pickMode = false;
       state.justConfirmed = false;
       state.dayNote = "";
@@ -1391,6 +1462,7 @@ function onClick(event) {
   if (action === "assign") {
     if (focusKey() < todayKey() || planFor(focusKey())) return;
     const meal = findMeal(Number(button.dataset.id));
+    if (!meal || isPork(meal)) return;
     state.draft[button.dataset.slot] = meal;
     state.draftDay = focusKey();
     state.draft.relaxed = false;
@@ -1398,6 +1470,22 @@ function onClick(event) {
     state.justConfirmed = false;
     state.deal = "";
     state.scrollTo = "#planner-meals";
+    render();
+  }
+  if (action === "swap-meals") {
+    if (focusKey() < todayKey() || planFor(focusKey())) return;
+    if (!state.draft.lunch && !state.draft.dinner) return;
+    const lunchMeal = state.draft.lunch;
+    state.draft.lunch = state.draft.dinner;
+    state.draft.dinner = lunchMeal;
+    const lunchLock = state.locks.lunch;
+    state.locks.lunch = state.locks.dinner;
+    state.locks.dinner = lunchLock;
+    if (state.draft.lunch?.id && state.draft.dinner?.id) state.pairKey = `${state.draft.lunch.id}-${state.draft.dinner.id}`;
+    state.draft.error = "";
+    state.deal = "";
+    state.dealToken = 0;
+    window.clearTimeout(surpriseTimer);
     render();
   }
   if (action === "lock-meal") {
@@ -1475,7 +1563,11 @@ function onInput(event) {
   const input = event.target;
   if (input.dataset.form) {
     const key = input.dataset.form;
-    const value = key === "weight" ? tenth(input.value) : Math.round(Number(input.value));
+    const value = key === "weight"
+      ? tenth(input.value)
+      : key === "deficit"
+        ? snapDeficit(input.value, profileFromForm().calories)
+        : Math.round(Number(input.value));
     state.form[key] = value;
     input.value = key === "weight" ? value.toFixed(1) : String(value);
     const tick = document.querySelector(`[data-tick="form-${key}"]`);
@@ -1611,6 +1703,7 @@ function showDate(date) {
   state.justConfirmed = false;
   state.deal = "";
   state.dayNote = "";
+  state.surpriseSeen = new Set();
   state.draft = {
     lunch: saved ? findMeal(saved.lunchId) : null,
     dinner: saved ? findMeal(saved.dinnerId) : null,
@@ -1630,12 +1723,13 @@ function paintDeficitWord() {
 
 function paintDeficitSlider() {
   const profile = profileFromForm();
-  const max = deficitMax(profile.calories);
+  const max = deficitLimit(profile.calories);
   const input = document.getElementById("deficit");
-  const value = Math.min(max, Math.max(0, Math.round(state.form.deficit)));
+  const value = snapDeficit(state.form.deficit, profile.calories);
   state.form.deficit = value;
   if (input) {
     input.max = String(max);
+    input.step = "5";
     input.value = String(value);
   }
   const tick = document.querySelector('[data-tick="form-deficit"]');
@@ -1786,9 +1880,10 @@ function persistPrefs() {
 
 function recentMealIds() {
   const ids = new Set();
-  state.plans.slice(0, 2).forEach((plan) => {
-    ids.add(plan.lunchId);
-    ids.add(plan.dinnerId);
+  state.plans.forEach((plan) => {
+    if (!plan.confirmedAt) return;
+    if (plan.lunchId) ids.add(plan.lunchId);
+    if (plan.dinnerId) ids.add(plan.dinnerId);
   });
   return ids;
 }
@@ -1831,6 +1926,7 @@ async function boot() {
     state.fasting.hours = Math.min(20, Math.max(12, Math.round(Number(state.fasting.hours) || 16)));
     if (state.profile?.heightCm && state.profile?.weightKg) {
       state.profile.calories = baselineCalories(state.profile.weightKg, state.profile.heightCm);
+      state.profile.deficit = snapDeficit(state.profile.deficit, state.profile.calories);
       saveProfile(state.profile);
     }
     state.plans = dedupePlans(Array.isArray(state.plans) ? state.plans : []);
@@ -1859,16 +1955,19 @@ async function boot() {
     const ring = document.querySelector(".ring");
     if (document.body.dataset.theme !== theme) render();
     else if (clock) {
-      const total = Math.max(0, Math.round(status.remainingMin));
+      const { hours, minutes, seconds } = remainingParts(status.remainingMin);
       const hourEl = document.querySelector('[data-tick="fast-h"]');
       const minuteEl = document.querySelector('[data-tick="fast-m"]');
-      if (hourEl && minuteEl) {
-        writeTick(hourEl, Math.floor(total / 60));
-        writeTick(minuteEl, total % 60);
+      const secondEl = document.querySelector('[data-tick="fast-s"]');
+      if (hourEl && minuteEl && secondEl) {
+        writeTick(hourEl, hours);
+        writeTick(minuteEl, minutes);
+        if (seconds > Number(secondEl.dataset.value)) seedTick("fast-s", seconds);
+        writeTick(secondEl, seconds);
       } else clock.textContent = formatRemaining(status.remainingMin);
       if (ring) ring.style.setProperty("--p", String(Math.round(status.progress * 100)));
     }
-  }, 30000);
+  }, 1000);
 }
 
 app.addEventListener("click", onClick);

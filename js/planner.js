@@ -1,5 +1,14 @@
 const LEVEL = { none: 0, less: 0.45, normal: 1, more: 1.8 };
 
+export function isPork(meal) {
+  if (!meal) return false;
+  const blob = `${meal.name || ""} ${meal.categories || ""} ${meal.tags || ""}`;
+  if (/\b(plant-based|vegan|vegetarian|mock meat)\b/i.test(blob) && !/\bpork\b/i.test(blob)) return false;
+  if (/\b(pork|bacon|pancetta|prosciutto|pepperoni|andouille|guanciale|salami|speck|lard|ham)\b/i.test(blob)) return true;
+  if (/\b(chorizo|sausage)\b/i.test(blob)) return true;
+  return false;
+}
+
 export function preferenceMultiplier(meal, preset) {
   const flags = [
     ["fish", meal.is_fish],
@@ -88,9 +97,10 @@ function pickWeighted(items) {
   return items[items.length - 1];
 }
 
-export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", fixed = null) {
-  const usable = meals.filter((meal) => preferenceMultiplier(meal, preset) > 0);
-  const held = fixed?.meal || null;
+export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", fixed = null, seenIds = null) {
+  const allowed = meals.filter((meal) => !isPork(meal));
+  const usable = allowed.filter((meal) => preferenceMultiplier(meal, preset) > 0);
+  const held = fixed?.meal && !isPork(fixed.meal) ? fixed.meal : null;
   if (!held && usable.length < 2) {
     return { error: "Every group is set to None, sis. Ease one slider and I'll try again." };
   }
@@ -111,19 +121,21 @@ export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", f
         boundPenalty(lunch.carbs + dinner.carbs, preset.carbs) +
         boundPenalty(lunch.fat + dinner.fat, preset.fat);
       const split = Math.abs(lunch.calories - calories * share) / Math.max(calories, 1);
+      const fit = 1 / (1 + penalty * 6);
+      const splitFactor = 1 / (1 + split * 3);
       const base =
         lunchPref *
         (weights[lunch.id] || 1) *
         dinnerPref *
-        (weights[dinner.id] || 1);
-      const recent =
-        (recentIds.has(lunch.id) ? 0.4 : 1) * (recentIds.has(dinner.id) ? 0.4 : 1);
+        (weights[dinner.id] || 1) *
+        fit *
+        splitFactor;
       scored.push({
         lunch,
         dinner,
         penalty,
         split,
-        weight: Math.max(0.05, base * recent),
+        weight: Math.max(0.01, base),
       });
     });
   });
@@ -132,24 +144,42 @@ export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", f
       ? "I need another meal to shuffle. Ease a slider or unlock this one."
       : "Every group is set to None, sis. Ease one slider and I'll try again." };
   }
-  let pool = scored.filter((pair) => pair.penalty === 0);
-  let relaxed = false;
-  if (!pool.length) {
-    relaxed = true;
-    scored.sort((a, b) => a.penalty - b.penalty || a.split - b.split);
-    const best = scored[0].penalty;
-    pool = scored.filter((pair) => pair.penalty <= best + 0.15).slice(0, 40);
-  } else {
-    pool.sort((a, b) => a.split - b.split);
-    const bestSplit = pool[0].split;
-    const close = pool.filter((pair) => pair.split <= bestSplit + 0.12);
-    pool = close.length >= 8 ? close : pool.slice(0, 80);
+  const offered = seenIds || new Set();
+  const history = recentIds || new Set();
+  const relaxed = scored.every((pair) => pair.penalty > 0);
+  scored.sort((a, b) => a.penalty - b.penalty);
+  const best = scored[0].penalty;
+  const caps = [0, 0.15, 0.35, 0.6, 1, 1.5, 2.5, 100];
+
+  const sameAsCurrent = (pair) => {
+    if (!avoidKey) return false;
+    const key = `${pair.lunch.id}-${pair.dinner.id}`;
+    const swapped = `${pair.dinner.id}-${pair.lunch.id}`;
+    return key === avoidKey || swapped === avoidKey;
+  };
+  const usesBlocked = (pair, blocked) => {
+    if (!blocked?.size) return false;
+    if (held && fixed.slot === "lunch") return blocked.has(pair.dinner.id);
+    if (held && fixed.slot === "dinner") return blocked.has(pair.lunch.id);
+    return blocked.has(pair.lunch.id) || blocked.has(pair.dinner.id);
+  };
+  const freshestBand = (blocked) => {
+    for (const cap of caps) {
+      const band = scored.filter((pair) => pair.penalty <= Math.max(cap, best) && !sameAsCurrent(pair) && !usesBlocked(pair, blocked));
+      if (band.length) return band;
+    }
+    return [];
+  };
+
+  const skip = new Set([...offered, ...history]);
+  let pool = freshestBand(skip);
+  if (!pool.length && offered.size) {
+    offered.clear();
+    pool = freshestBand(history);
   }
-  let choice = pickWeighted(pool);
-  const key = `${choice.lunch.id}-${choice.dinner.id}`;
-  if (avoidKey && key === avoidKey && pool.length > 1) {
-    const other = pool.filter((pair) => `${pair.lunch.id}-${pair.dinner.id}` !== avoidKey);
-    if (other.length) choice = pickWeighted(other);
-  }
+  if (!pool.length) pool = freshestBand(new Set());
+  if (!pool.length) pool = scored.filter((pair) => !sameAsCurrent(pair));
+  if (!pool.length) pool = scored;
+  const choice = pickWeighted(pool);
   return { lunch: choice.lunch, dinner: choice.dinner, relaxed };
 }

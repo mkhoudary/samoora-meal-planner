@@ -43,9 +43,11 @@ function minutesToHHMM(mins) {
 }
 
 export function formatRemaining(mins) {
-  const total = Math.max(0, Math.round(mins));
-  const hours = Math.floor(total / 60);
-  const minutes = total % 60;
-  if (hours <= 0) return `${minutes} min`;
-  return `${hours}h ${minutes}m`;
+  const total = Math.max(0, Math.round(Number(mins) * 60));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours <= 0 && minutes <= 0) return `${seconds}s`;
+  if (hours <= 0) return `${minutes}m ${seconds}s`;
+  return `${hours}h ${minutes}m ${seconds}s`;
 }
