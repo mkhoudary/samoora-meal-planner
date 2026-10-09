@@ -84,6 +84,8 @@ const state = {
   aheadPick: null,
   aheadQuery: "",
   aheadNote: "",
+  aheadSheet: null,
+  aheadSheetFocus: false,
   calendarPage: 0,
 };
 
@@ -662,6 +664,11 @@ function bodyFields({ weight = true } = {}) {
 function cookLink(meal) {
   if (!meal?.url) return "";
   return `<div class="cook-row"><a class="primary" href="${esc(meal.url)}" target="_blank" rel="noopener">View on CookUnity</a></div>`;
+}
+
+function cookButton(meal) {
+  if (!meal?.url) return "";
+  return `<a class="tiny" href="${esc(meal.url)}" target="_blank" rel="noopener">View on CookUnity</a>`;
 }
 
 function nutrientBits(meal) {
@@ -1276,8 +1283,44 @@ function shuffleAhead() {
 
 function aheadChoiceButtons() {
   const choices = aheadChoices(state.aheadQuery);
+  const pick = state.aheadPick;
   if (!choices.length) return `<p class="quiet">Nothing else matches.</p>`;
-  return choices.map((item) => `<button class="tiny ahead-option" type="button" data-action="ahead-assign" data-id="${item.id}">${esc(item.name)}</button>`).join("");
+  if (!pick) return "";
+  return choices.map((item) => `<button class="tiny ahead-option" type="button" data-action="ahead-peek" data-date="${esc(pick.date)}" data-slot="${pick.slot}" data-id="${item.id}">${esc(item.name)}</button>`).join("");
+}
+
+function splitBits(text) {
+  return String(text || "").split(";").map((item) => item.trim()).filter(Boolean);
+}
+
+function similarMeals(meal, blocked) {
+  if (!meal) return [];
+  const cats = new Set(splitBits(meal.categories).map((item) => item.toLowerCase()));
+  const tags = new Set(splitBits(`${meal.tags};${meal.cookunity_labels};${meal.nutrition_labels}`).map((item) => item.toLowerCase()));
+  const preset = planningPreset();
+  const ranked = [];
+  state.meals.forEach((other) => {
+    if (!other || other.id === meal.id || isPork(other)) return;
+    if (preferenceMultiplier(other, preset) <= 0) return;
+    const shared = splitBits(other.categories).filter((item) => cats.has(item.toLowerCase()));
+    let score = shared.length * 3;
+    splitBits(`${other.tags};${other.cookunity_labels};${other.nutrition_labels}`).forEach((item) => {
+      if (tags.has(item.toLowerCase())) score += 1;
+    });
+    if (meal.is_fish && other.is_fish) score += 2;
+    if (meal.is_chicken && other.is_chicken) score += 2;
+    if (meal.is_meat && other.is_meat) score += 2;
+    if (meal.is_veg && other.is_veg) score += 2;
+    if (meal.chef && other.chef && meal.chef === other.chef) score += 1;
+    const gap = Math.abs((Number(meal.calories) || 0) - (Number(other.calories) || 0));
+    if (gap <= 120) score += 2;
+    else if (gap <= 250) score += 1;
+    if (score < 3) return;
+    ranked.push({ meal: other, score, why: shared.slice(0, 2).join(" · "), used: blocked.has(other.id) });
+  });
+  ranked.sort((left, right) => right.score - left.score || left.meal.name.localeCompare(right.meal.name));
+  const fresh = ranked.filter((item) => !item.used);
+  return (fresh.length >= 4 ? fresh : ranked).slice(0, 6);
 }
 
 function aheadChoices(query) {
@@ -1295,14 +1338,20 @@ function aheadMealHTML(row, slot) {
   const meal = row[slot];
   const label = slot === "lunch" ? "Lunch" : "Dinner";
   const picking = state.aheadPick?.date === row.date && state.aheadPick?.slot === slot;
+  const open = state.aheadSheet?.date === row.date && state.aheadSheet?.slot === slot;
   const kept = slot === "lunch" ? row.keepLunch : row.keepDinner;
+  const links = `<div class="row">
+      ${cookButton(meal)}
+      ${meal ? `<button class="tiny" type="button" data-action="ahead-details" data-date="${esc(row.date)}" data-slot="${slot}" aria-pressed="${open}">Details</button>` : ""}
+    </div>`;
   if (row.saved) {
-    return `<div class="ahead-meal"><p class="slot">${label}</p><h3>${esc(meal?.name || "Saved")}</h3><p class="quiet">Already saved</p></div>`;
+    return `<div class="ahead-meal"><p class="slot">${label}</p><h3>${esc(meal?.name || "Saved")}</h3><p class="quiet">Already saved</p>${links}</div>`;
   }
   return `<div class="ahead-meal">
     <p class="slot">${label}${kept ? " · chosen" : ""}</p>
     <h3>${esc(meal?.name || "Nothing here yet")}</h3>
     <p class="quiet">${meal ? `${fixed2(meal.calories)} cal` : ""}</p>
+    ${links}
     <div class="row">
       <button class="tiny" type="button" data-action="ahead-else" data-date="${esc(row.date)}" data-slot="${slot}">Something else</button>
       <button class="tiny" type="button" data-action="ahead-choose" data-date="${esc(row.date)}" data-slot="${slot}" aria-pressed="${picking}">Choose</button>
@@ -1311,6 +1360,52 @@ function aheadMealHTML(row, slot) {
       <label>Search the menu<input id="aheadSearch" type="search" value="${esc(state.aheadQuery)}" placeholder="Chicken, salmon, a chef..."></label>
       <div class="ahead-options">${aheadChoiceButtons()}</div>
     </div>` : ""}
+  </div>`;
+}
+
+function aheadSheetHTML() {
+  const sheet = state.aheadSheet;
+  if (!sheet) return "";
+  const row = (state.aheadRows || []).find((item) => item.date === sheet.date);
+  const meal = findMeal(sheet.mealId);
+  if (!row || !meal || (sheet.slot !== "lunch" && sheet.slot !== "dinner")) return "";
+  const label = sheet.slot === "lunch" ? "Lunch" : "Dinner";
+  const bits = dayBits(row.date);
+  const taken = aheadUsed({ date: row.date, slot: sheet.slot }).has(meal.id);
+  const pills = splitBits(meal.categories).slice(0, 8);
+  const similar = similarMeals(meal, aheadUsed({ date: row.date, slot: sheet.slot }));
+  const use = row.saved
+    ? `<p class="quiet">This day is already saved.</p>`
+    : taken
+      ? `<p class="warn">That meal is already on another day.</p>`
+      : `<button class="primary" type="button" data-action="ahead-sheet-use">Use this meal</button>`;
+  return `<div class="sheet-root" id="ahead-sheet">
+    <button class="sheet-backdrop" type="button" data-action="ahead-sheet-close" aria-label="Close details"></button>
+    <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="ahead-sheet-title">
+      <div class="sheet-head">
+        <p class="slot">${label} · ${esc(bits.weekday)}</p>
+        <button class="tiny" type="button" data-action="ahead-sheet-close">Close</button>
+      </div>
+      <h2 id="ahead-sheet-title" tabindex="-1">${esc(meal.name)}</h2>
+      <p class="quiet">${esc(meal.chef || "CookUnity")}</p>
+      <div class="stats">
+        <span>${fixed2(meal.calories)} cal</span>
+        <span>${fixed2(meal.protein)}g protein</span>
+        <span>${fixed2(meal.carbs)}g carbs</span>
+        <span>${fixed2(meal.fat)}g fat</span>
+      </div>
+      ${pills.length ? `<div class="pills">${pills.map((pill) => `<span>${esc(pill)}</span>`).join("")}</div>` : ""}
+      ${tagRow(meal.cookunity_labels, "")}
+      ${tagRow(meal.nutrition_labels, "macros")}
+      ${cookLink(meal)}
+      <p class="quiet">Look through this meal and the ones close to it, then use the one you want.</p>
+      ${use}
+      <h3>Similar meals</h3>
+      ${similar.length ? `<div class="sheet-similar">${similar.map((item) => `<button class="similar" type="button" data-action="ahead-sheet-look" data-id="${item.meal.id}">
+        <strong>${esc(item.meal.name)}</strong>
+        <span>${fixed2(item.meal.calories)} cal${item.why ? ` · ${esc(item.why)}` : ""}${item.used ? " · Already on another day" : ""}</span>
+      </button>`).join("")}</div>` : `<p class="quiet">Nothing else sits close to this one.</p>`}
+    </aside>
   </div>`;
 }
 
@@ -1330,7 +1425,7 @@ function renderAhead() {
       <button class="primary" type="button" data-action="ahead-save">Save these days</button>
       <button class="ghost" type="button" data-action="ahead-reset">Start over</button>
     </div>
-    <p class="quiet">Something else draws another meal. Choose keeps that meal when you shuffle. The same meal is not repeated across these days.</p>
+    <p class="quiet">Something else draws another meal. Details opens the meal and similar ones before you keep it. Choose searches the menu the same way. The same meal is not repeated across these days.</p>
     ${state.aheadNote ? `<p class="warn" id="ahead-note">${esc(state.aheadNote)}</p>` : ""}
     ${state.aheadRows.map((row) => {
       const bits = dayBits(row.date);
@@ -1339,6 +1434,7 @@ function renderAhead() {
         <div class="ahead-pair">${aheadMealHTML(row, "lunch")}${aheadMealHTML(row, "dinner")}</div>
       </article>`;
     }).join("")}`}
+    ${aheadSheetHTML()}
     ${footer()}</main>`;
 }
 
@@ -1480,7 +1576,9 @@ function themeFor() {
 
 function render() {
   expireDraft();
+  if (state.screen !== "ahead") state.aheadSheet = null;
   document.body.dataset.theme = themeFor();
+  document.body.classList.toggle("sheet-open", Boolean(state.aheadSheet));
   const scrollTo = state.scrollTo;
   state.scrollTo = null;
   const y = window.scrollY;
@@ -1503,6 +1601,12 @@ function render() {
   } else if (y) window.scrollTo(0, y);
   playTicks(app);
   seedOpenNumbers();
+  if (state.aheadSheetFocus) {
+    state.aheadSheetFocus = false;
+    requestAnimationFrame(() => {
+      document.getElementById("ahead-sheet-title")?.focus({ preventScroll: true });
+    });
+  }
 }
 
 function seedOpenNumbers() {
@@ -1638,17 +1742,20 @@ function onClick(event) {
   }
   if (action === "ahead-build") {
     fillAhead(state.aheadDays || 3);
+    state.aheadSheet = null;
     render();
   }
   if (action === "ahead-reset") {
     state.aheadRows = null;
     state.aheadPick = null;
     state.aheadNote = "";
+    state.aheadSheet = null;
     render();
   }
   if (action === "ahead-shuffle") {
     if (!state.aheadRows) return;
     shuffleAhead();
+    state.aheadSheet = null;
     render();
   }
   if (action === "ahead-else") {
@@ -1665,7 +1772,49 @@ function onClick(event) {
     row[slot] = meal;
     if (slot === "lunch") row.keepLunch = false;
     else row.keepDinner = false;
+    if (state.aheadSheet?.date === row.date && state.aheadSheet?.slot === slot) state.aheadSheet = null;
     state.aheadNote = "";
+    render();
+  }
+  if (action === "ahead-details" || action === "ahead-peek") {
+    const date = button.dataset.date;
+    const slot = button.dataset.slot;
+    const row = (state.aheadRows || []).find((item) => item.date === date);
+    if (!row || (slot !== "lunch" && slot !== "dinner")) return;
+    const meal = action === "ahead-peek" ? findMeal(Number(button.dataset.id)) : row[slot];
+    if (!meal || isPork(meal)) return;
+    state.aheadSheet = { date, slot, mealId: meal.id };
+    state.aheadSheetFocus = true;
+    render();
+  }
+  if (action === "ahead-sheet-close") {
+    state.aheadSheet = null;
+    render();
+  }
+  if (action === "ahead-sheet-look") {
+    const meal = findMeal(Number(button.dataset.id));
+    if (!state.aheadSheet || !meal || isPork(meal)) return;
+    state.aheadSheet = { ...state.aheadSheet, mealId: meal.id };
+    state.aheadSheetFocus = true;
+    render();
+  }
+  if (action === "ahead-sheet-use") {
+    const sheet = state.aheadSheet;
+    const row = sheet && (state.aheadRows || []).find((item) => item.date === sheet.date);
+    const meal = sheet && findMeal(sheet.mealId);
+    if (!row || row.saved || !meal || isPork(meal) || (sheet.slot !== "lunch" && sheet.slot !== "dinner")) return;
+    if (aheadUsed({ date: row.date, slot: sheet.slot }).has(meal.id)) {
+      state.aheadNote = "That meal is already on another day.";
+      render();
+      return;
+    }
+    row[sheet.slot] = meal;
+    if (sheet.slot === "lunch") row.keepLunch = true;
+    else row.keepDinner = true;
+    state.aheadPick = null;
+    state.aheadQuery = "";
+    state.aheadNote = "";
+    state.aheadSheet = null;
     render();
   }
   if (action === "ahead-choose") {
@@ -2371,6 +2520,11 @@ app.addEventListener("pointerdown", (event) => {
   knob.addEventListener("pointermove", move);
   knob.addEventListener("pointerup", up);
   knob.addEventListener("pointercancel", up);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !state.aheadSheet) return;
+  state.aheadSheet = null;
+  render();
 });
 app.addEventListener("keydown", (event) => {
   const knob = event.target.closest?.(".knob");
