@@ -183,3 +183,15 @@ export function surprisePair(meals, preset, weights, recentIds, avoidKey = "", f
   const choice = pickWeighted(pool);
   return { lunch: choice.lunch, dinner: choice.dinner, relaxed };
 }
+
+export function suggestMeal(meals, preset, weights, blocked, avoidId = null) {
+  const skip = blocked instanceof Set ? blocked : new Set(blocked || []);
+  const usable = (meals || []).filter((meal) => meal && !isPork(meal) && meal.id !== avoidId && preferenceMultiplier(meal, preset) > 0);
+  const fresh = usable.filter((meal) => !skip.has(meal.id));
+  const pool = fresh.length ? fresh : usable;
+  if (!pool.length) return null;
+  return pickWeighted(pool.map((meal) => ({
+    meal,
+    weight: Math.max(0.05, (weights[meal.id] || 1) * preferenceMultiplier(meal, preset)),
+  }))).meal;
+}

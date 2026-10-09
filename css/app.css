@@ -596,6 +596,63 @@ a.primary {
 
 .backbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 
+.calendar { margin-top: 8px; }
+.cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.cal-nav strong { font-family: Fraunces, Georgia, serif; font-size: 1.15rem; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+.cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-height: 148px;
+  padding: 10px 8px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  text-align: left;
+}
+.cal-day strong { font-family: Fraunces, Georgia, serif; font-size: 1.4rem; line-height: 1; }
+.cal-kicker { color: var(--muted); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.cal-day.is-today { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.cal-day.is-today .cal-kicker { color: var(--accent); }
+.cal-day.is-past { opacity: 0.72; }
+.cal-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cal-pair span {
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.cal-pair small { display: block; color: var(--muted); font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.ahead-day {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+.ahead-day header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.ahead-day header strong { font-family: Fraunces, Georgia, serif; }
+.ahead-day header span { color: var(--muted); font-weight: 800; }
+.ahead-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ahead-meal { padding: 12px; border-radius: 14px; background: var(--bg); }
+.ahead-meal h3 { margin: 4px 0; font-size: 1rem; }
+.ahead-meal .row { margin-top: 8px; }
+.ahead-picker { display: grid; gap: 6px; margin-top: 10px; }
+.ahead-option { text-align: left; }
+
 .day-nav {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -767,6 +824,8 @@ a.primary {
   .logo { height: 64px; }
   .top { flex-wrap: wrap; align-items: center; }
   .top nav { width: 100%; justify-content: flex-start; }
+  .cal-grid, .ahead-pair { grid-template-columns: 1fr; }
+  .cal-day { min-height: 0; }
 }
 
 @media (min-width: 860px) {

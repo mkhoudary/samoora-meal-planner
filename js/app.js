@@ -5,6 +5,8 @@ import {
   meterFor,
   ratingWords,
   isPork,
+  preferenceMultiplier,
+  suggestMeal,
   surprisePair,
   weightFromRating,
 } from "./planner.js";
@@ -77,6 +79,12 @@ const state = {
   locks: { lunch: false, dinner: false },
   dayNote: "",
   surpriseSeen: new Set(),
+  aheadDays: 3,
+  aheadRows: null,
+  aheadPick: null,
+  aheadQuery: "",
+  aheadNote: "",
+  calendarPage: 0,
 };
 
 const app = document.querySelector("#app");
@@ -112,6 +120,10 @@ function tomorrowKey() {
   return shiftDate(todayKey(), 1);
 }
 
+function horizonKey() {
+  return shiftDate(todayKey(), 14);
+}
+
 function yesterdayKey() {
   return shiftDate(todayKey(), -1);
 }
@@ -127,7 +139,7 @@ function floorKey() {
 
 function focusKey() {
   const focus = state.focusDate;
-  if (!focus || focus > tomorrowKey()) return todayKey();
+  if (!focus || focus > horizonKey()) return todayKey();
   return focus;
 }
 
@@ -332,33 +344,28 @@ function planningBlocked(date = focusKey()) {
   return date < todayKey() || (date === todayKey() && todayHeld());
 }
 
-function canShiftYesterday(date) {
-  return shiftDate(date, -1) >= floorKey();
-}
-
 function dayNav(date = focusKey()) {
-  const onHome = state.screen === "home";
-  const viewing = onHome ? todayKey() : date;
+  const viewing = date;
   const button = (day, label, pressed, enabled) =>
     `<button class="ghost" type="button" data-action="shift-day" data-day="${day}" aria-pressed="${pressed}" ${enabled ? "" : "disabled"}>${label}</button>`;
   return `<div class="day-nav" role="group" aria-label="Days">
-    ${button("yesterday", "Yesterday", !onHome && viewing === yesterdayKey(), canShiftYesterday(viewing))}
-    ${button("today", "Today", onHome || viewing === todayKey(), true)}
-    ${button("tomorrow", "Tomorrow", !onHome && viewing === tomorrowKey(), viewing < tomorrowKey())}
+    ${button("previous", "Previous", false, shiftDate(viewing, -1) >= floorKey())}
+    ${button("today", "Today", viewing === todayKey(), true)}
+    ${button("next", "Next", false, viewing < horizonKey())}
   </div>`;
 }
 
 function goDay(which) {
   const current = state.screen === "home" ? todayKey() : focusKey();
   let next = todayKey();
-  if (which === "yesterday") {
+  if (which === "yesterday" || which === "previous") {
     next = shiftDate(current, -1);
     if (next < floorKey()) return;
-  } else if (which === "tomorrow") {
-    if (current >= tomorrowKey()) return;
+  } else if (which === "tomorrow" || which === "next") {
+    if (current >= horizonKey()) return;
     next = shiftDate(current, 1);
   }
-  const stayOnHistory = state.screen === "history" && which === "yesterday";
+  const stayOnHistory = state.screen === "history" && (which === "yesterday" || which === "previous");
   showDate(next);
   state.dayNote = "";
   state.screen = stayOnHistory ? "history" : "planner";
@@ -976,7 +983,7 @@ function stars(planDate, slot, field, current) {
 
 function ratingCard(plan, { heading = true } = {}) {
   if (plan.date > todayKey()) {
-    return `<p class="warn" id="rating-note">You can only rate tomorrow.</p>`;
+    return `<p class="warn" id="rating-note">You can rate this day when it arrives.</p>`;
   }
   state.ratingDraft[plan.date] = state.ratingDraft[plan.date] || { lunch: {}, dinner: {} };
   const lunch = findMeal(plan.lunchId);
@@ -1127,47 +1134,58 @@ function fastingBlock(status) {
     </section>`;
 }
 
-function homeToday(plan) {
-  if (todayHeld()) {
-    return `<section class="day-block" id="home-today"><h2>Today</h2>
-      ${plan ? `<div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { rating: plan.ratings?.lunch, scope: "home-today-" })}${mealCard(findMeal(plan.dinnerId), "Dinner", { rating: plan.ratings?.dinner, scope: "home-today-" })}</div>` : ""}
-      <p class="quiet">${plan ? "This fast reaches tomorrow, so today's meals stay as they are." : "This fast reaches tomorrow, so today stays unplanned."}</p>
-    </section>`;
-  }
-  if (!plan) {
-    return `<section class="day-block" id="home-today"><h2>Today</h2>
-      <p class="quiet">The day is open. Plan lunch and dinner when you're ready.</p>
-      <button class="primary" type="button" data-action="planner" data-day="today">Plan today</button>
-    </section>`;
-  }
-  const needsRating = !dayClosed(plan) && (!plan.ratings?.lunch?.overall || !plan.ratings?.dinner?.overall);
-  return `<section class="day-block" id="home-today"><h2>Today</h2>
-    <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { rating: plan.ratings?.lunch, scope: "home-today-" })}${mealCard(findMeal(plan.dinnerId), "Dinner", { rating: plan.ratings?.dinner, scope: "home-today-" })}</div>
-    <div class="row" style="margin-top:14px">
-      ${anyRated(plan) ? "" : `<button class="primary" type="button" data-action="planner" data-day="today" data-scroll="#planner-meals">Change meals</button>`}
-      ${needsRating ? `<button class="ghost" type="button" data-action="planner" data-day="today" data-scroll="#day-rating">Rate these meals</button>` : ""}
-    </div>
-  </section>`;
+function dayBits(iso) {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return {
+    dow: date.toLocaleDateString([], { weekday: "short" }),
+    weekday: date.toLocaleDateString([], { weekday: "long" }),
+    month: date.toLocaleDateString([], { month: "long" }),
+    num: day,
+  };
 }
 
-function homeTomorrow(tomorrow, todayReady) {
-  if (tomorrow) {
-    return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
-      <p class="warn" id="rating-note">You can only rate tomorrow.</p>
-      <div class="meals">${mealCard(findMeal(tomorrow.lunchId), "Lunch", { scope: "home-tomorrow-" })}${mealCard(findMeal(tomorrow.dinnerId), "Dinner", { scope: "home-tomorrow-" })}</div>
-      <div class="row" style="margin-top:14px">
-        <button class="primary" type="button" data-action="planner" data-day="tomorrow">Change meals</button>
-      </div>
-    </section>`;
-  }
-  if (!todayReady) {
-    return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
-      <p class="quiet">Tomorrow opens once today is planned.</p>
-    </section>`;
-  }
-  return `<section class="day-block" id="home-tomorrow"><h2>Tomorrow</h2>
-    <p class="quiet">Tomorrow is open for planning. Rating waits for the day itself.</p>
-    <button class="primary" type="button" data-action="planner" data-day="tomorrow">Plan tomorrow</button>
+function calendarStart() {
+  return shiftDate(todayKey(), (state.calendarPage || 0) * 7);
+}
+
+function calendarLabel(start) {
+  const end = shiftDate(start, 6);
+  const first = dayBits(start);
+  const last = dayBits(end);
+  return first.month === last.month ? `${first.month} ${first.num} – ${last.num}` : `${first.month} ${first.num} – ${last.month} ${last.num}`;
+}
+
+function calendarHTML() {
+  const start = calendarStart();
+  const prevOk = shiftDate(start, -7) >= shiftDate(floorKey(), -6);
+  const nextOk = shiftDate(start, 7) <= horizonKey();
+  const days = Array.from({ length: 7 }, (_, index) => shiftDate(start, index));
+  return `<section class="calendar">
+    <div class="cal-nav">
+      <button class="ghost" type="button" data-action="cal-page" data-step="-1" ${prevOk ? "" : "disabled"}>Previous</button>
+      <strong>${esc(calendarLabel(start))}</strong>
+      <button class="ghost" type="button" data-action="cal-page" data-step="1" ${nextOk ? "" : "disabled"}>Next</button>
+    </div>
+    <div class="cal-grid">
+      ${days.map((date) => {
+        const bits = dayBits(date);
+        const plan = planFor(date);
+        const today = date === todayKey();
+        const past = date < todayKey();
+        const far = date > horizonKey();
+        const lunch = plan ? findMeal(plan.lunchId) : null;
+        const dinner = plan ? findMeal(plan.dinnerId) : null;
+        return `<button class="cal-day${today ? " is-today" : ""}${past ? " is-past" : ""}${plan ? " is-planned" : ""}" type="button" data-action="open-day" data-date="${esc(date)}" ${far ? "disabled" : ""}>
+          <span class="cal-kicker">${today ? "Today" : esc(bits.dow)}</span>
+          <strong>${bits.num}</strong>
+          <span class="cal-pair">
+            <span><small>Lunch</small>${lunch ? esc(lunch.name) : "Open"}</span>
+            <span><small>Dinner</small>${dinner ? esc(dinner.name) : "Open"}</span>
+          </span>
+        </button>`;
+      }).join("")}
+    </div>
   </section>`;
 }
 
@@ -1179,18 +1197,148 @@ function renderHome() {
   }
   const status = fastingStatus(state.fasting);
   const fastingNow = status.enabled && status.phase === "fasting";
-  const plan = todayPlan();
-  const tomorrow = planFor(tomorrowKey());
   const waiting = confirmedPlans().filter((item) => item.date < todayKey() && (!item.ratings?.lunch?.overall || !item.ratings?.dinner?.overall));
   return `${header()}<main class="wrap">
     <p class="quiet">${esc(prettyDate(todayKey()))}</p>
     <h1>${fastingNow ? "You're fasting" : "Home"}</h1>
     ${fastingBlock(status)}
-    ${dayNav(todayKey())}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
+    ${todayHeld() ? `<p class="quiet">This fast reaches tomorrow, so today stays unplanned.</p>` : ""}
     ${waiting.length ? `<p class="banner"><button class="ghost" type="button" data-action="history">History</button> is holding meals that still want a rating.</p>` : ""}
-    ${homeToday(plan)}
-    ${homeTomorrow(tomorrow, Boolean(plan) || todayHeld())}
+    <div class="row" style="margin-bottom:12px">
+      <button class="primary" type="button" data-action="ahead">Plan ahead</button>
+      ${todayHeld() ? "" : `<button class="ghost" type="button" data-action="planner" data-day="today">Plan today</button>`}
+    </div>
+    ${calendarHTML()}
+    ${footer()}</main>`;
+}
+
+function aheadUsed(except) {
+  const ids = new Set(recentMealIds());
+  (state.aheadRows || []).forEach((row) => {
+    ["lunch", "dinner"].forEach((slot) => {
+      if (except && except.date === row.date && except.slot === slot) return;
+      if (row[slot]?.id) ids.add(row[slot].id);
+    });
+  });
+  return ids;
+}
+
+function fillAhead(count) {
+  const rows = [];
+  const kept = new Set(recentMealIds());
+  let date = tomorrowKey();
+  const days = Math.min(14, Math.max(1, count));
+  for (let index = 0; index < days && date <= horizonKey(); index += 1) {
+    const saved = planFor(date);
+    if (saved) {
+      const lunch = findMeal(saved.lunchId);
+      const dinner = findMeal(saved.dinnerId);
+      if (lunch?.id) kept.add(lunch.id);
+      if (dinner?.id) kept.add(dinner.id);
+      rows.push({ date, lunch, dinner, saved: true, keepLunch: true, keepDinner: true });
+    } else {
+      const result = surprisePair(state.meals, planningPreset(), state.mealWeights, kept, "", null, new Set(kept));
+      const lunch = result.lunch || null;
+      const dinner = result.dinner || null;
+      if (lunch?.id) kept.add(lunch.id);
+      if (dinner?.id) kept.add(dinner.id);
+      rows.push({ date, lunch, dinner, saved: false, keepLunch: false, keepDinner: false });
+    }
+    date = shiftDate(date, 1);
+  }
+  state.aheadRows = rows;
+  state.aheadPick = null;
+  state.aheadNote = "";
+}
+
+function shuffleAhead() {
+  const kept = new Set(recentMealIds());
+  state.aheadRows.forEach((row) => {
+    if (row.saved || row.keepLunch) kept.add(row.lunch?.id);
+    if (row.saved || row.keepDinner) kept.add(row.dinner?.id);
+  });
+  state.aheadRows.forEach((row) => {
+    if (row.saved || (row.keepLunch && row.keepDinner)) return;
+    const fixed = row.keepLunch && row.lunch
+      ? { slot: "lunch", meal: row.lunch }
+      : row.keepDinner && row.dinner
+        ? { slot: "dinner", meal: row.dinner }
+        : null;
+    const result = surprisePair(state.meals, planningPreset(), state.mealWeights, kept, "", fixed, new Set(kept));
+    if (result.lunch && !row.keepLunch) row.lunch = result.lunch;
+    if (result.dinner && !row.keepDinner) row.dinner = result.dinner;
+    if (row.lunch?.id) kept.add(row.lunch.id);
+    if (row.dinner?.id) kept.add(row.dinner.id);
+  });
+  state.aheadNote = "";
+}
+
+function aheadChoiceButtons() {
+  const choices = aheadChoices(state.aheadQuery);
+  if (!choices.length) return `<p class="quiet">Nothing else matches.</p>`;
+  return choices.map((item) => `<button class="tiny ahead-option" type="button" data-action="ahead-assign" data-id="${item.id}">${esc(item.name)}</button>`).join("");
+}
+
+function aheadChoices(query) {
+  const needle = query.trim().toLowerCase();
+  const used = aheadUsed(state.aheadPick);
+  return state.meals.filter((meal) => {
+    if (isPork(meal) || used.has(meal.id)) return false;
+    if (preferenceMultiplier(meal, planningPreset()) <= 0) return false;
+    if (!needle) return true;
+    return `${meal.name} ${meal.chef}`.toLowerCase().includes(needle);
+  }).slice(0, 12);
+}
+
+function aheadMealHTML(row, slot) {
+  const meal = row[slot];
+  const label = slot === "lunch" ? "Lunch" : "Dinner";
+  const picking = state.aheadPick?.date === row.date && state.aheadPick?.slot === slot;
+  const kept = slot === "lunch" ? row.keepLunch : row.keepDinner;
+  if (row.saved) {
+    return `<div class="ahead-meal"><p class="slot">${label}</p><h3>${esc(meal?.name || "Saved")}</h3><p class="quiet">Already saved</p></div>`;
+  }
+  return `<div class="ahead-meal">
+    <p class="slot">${label}${kept ? " · chosen" : ""}</p>
+    <h3>${esc(meal?.name || "Nothing here yet")}</h3>
+    <p class="quiet">${meal ? `${fixed2(meal.calories)} cal` : ""}</p>
+    <div class="row">
+      <button class="tiny" type="button" data-action="ahead-else" data-date="${esc(row.date)}" data-slot="${slot}">Something else</button>
+      <button class="tiny" type="button" data-action="ahead-choose" data-date="${esc(row.date)}" data-slot="${slot}" aria-pressed="${picking}">Choose</button>
+    </div>
+    ${picking ? `<div class="ahead-picker" id="ahead-picker">
+      <label>Search the menu<input id="aheadSearch" type="search" value="${esc(state.aheadQuery)}" placeholder="Chicken, salmon, a chef..."></label>
+      <div class="ahead-options">${aheadChoiceButtons()}</div>
+    </div>` : ""}
+  </div>`;
+}
+
+function renderAhead() {
+  const days = state.aheadDays || 3;
+  const asking = !state.aheadRows;
+  return `${header()}<main class="wrap">${backBar()}
+    <h1>Plan ahead</h1>
+    ${host("notebook", "<p>Tell me how many days ahead, and I'll lay lunch and dinner side by side. Shuffle the open ones, or keep a meal you choose.</p>")}
+    ${asking ? `<div class="card fields">
+      <label><span>How many days ahead? ${tickHTML("ahead-days", days, 0)}</span>
+        <input type="range" min="1" max="14" step="1" value="${days}" data-ahead-days="1">
+      </label>
+      <button class="primary" type="button" data-action="ahead-build">Show the days</button>
+    </div>` : `<div class="row">
+      <button class="ghost" type="button" data-action="ahead-shuffle">Shuffle</button>
+      <button class="primary" type="button" data-action="ahead-save">Save these days</button>
+      <button class="ghost" type="button" data-action="ahead-reset">Start over</button>
+    </div>
+    <p class="quiet">Something else draws another meal. Choose keeps that meal when you shuffle. The same meal is not repeated across these days.</p>
+    ${state.aheadNote ? `<p class="warn" id="ahead-note">${esc(state.aheadNote)}</p>` : ""}
+    ${state.aheadRows.map((row) => {
+      const bits = dayBits(row.date);
+      return `<article class="ahead-day">
+        <header><strong>${esc(bits.weekday)}</strong><span>${esc(bits.month)} ${bits.num}</span></header>
+        <div class="ahead-pair">${aheadMealHTML(row, "lunch")}${aheadMealHTML(row, "dinner")}</div>
+      </article>`;
+    }).join("")}`}
     ${footer()}</main>`;
 }
 
@@ -1227,13 +1375,13 @@ function renderPlanner() {
     <h1>Planner</h1>
     ${fastingBlock(status)}
     ${dayNav(date)}
-    ${ahead ? `<p class="warn" id="rating-note">You can only rate tomorrow.</p>` : ""}
+    ${ahead ? `<p class="warn" id="rating-note">You can rate this day when it arrives.</p>` : ""}
     ${held ? `<p class="warn" id="fast-hold">${saved ? "This fast reaches tomorrow, so today's meals stay as they are." : "This fast reaches tomorrow, so today stays unplanned."}</p>` : ""}
     ${fastingNow ? `<h2>For when you eat</h2>` : ""}
     ${past ? "" : host(state.pickMode && !locked ? "grocery" : "chef", `<p class="idiom">${esc(idiom)}</p>`)}
     ${status.enabled && !fastingNow ? `<p class="banner">Eating window until ${esc(status.windowCloses)}.</p>` : ""}
     ${state.dayNote ? `<p class="warn" id="day-note">${esc(state.dayNote)}</p>` : ""}
-    ${state.justConfirmed ? `<p class="banner">Saved for ${esc(dayLabel)}. ${ahead ? "You can only rate tomorrow." : "Rate the meals when you've eaten them, then start a new day."}</p>` : ""}
+    ${state.justConfirmed ? `<p class="banner">Saved for ${esc(dayLabel)}. ${ahead ? "You can rate this day when it arrives." : "Rate the meals when you've eaten them, then start a new day."}</p>` : ""}
     ${!ahead && finished ? `<p class="banner">${esc(prettyDate(date))} keeps this one plan.</p>` : ""}
     ${locked && date === todayKey() && !anyRated(saved) && !held ? `<p class="quiet">Unconfirm opens this day again.</p>` : ""}
     ${state.draft.error ? `<p class="warn" id="form-error">${esc(state.draft.error)}</p>` : ""}
@@ -1288,7 +1436,7 @@ function historyDay(plan, { open = true } = {}) {
   const needsRating = open && !future && (!lunchRating || !dinnerRating);
   return `<section class="card history-day" id="day-${esc(plan.date)}"><h2>${esc(named || prettyDate(plan.date))}</h2>
     ${named ? `<p class="quiet">${esc(prettyDate(plan.date))}</p>` : ""}
-    ${future ? `<p class="warn" id="rating-note">You can only rate tomorrow.</p>` : ""}
+    ${future ? `<p class="warn" id="rating-note">You can rate this day when it arrives.</p>` : ""}
     <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { ...(lunchRating ? { rating: lunchRating } : {}), scope: `${plan.date}-` })}${mealCard(findMeal(plan.dinnerId), "Dinner", { ...(dinnerRating ? { rating: dinnerRating } : {}), scope: `${plan.date}-` })}</div>
     ${needsRating ? ratingCard(plan, { heading: false }) : ""}
   </section>`;
@@ -1306,7 +1454,7 @@ function renderHistory() {
   return `${header()}<main class="wrap">${backBar()}<h1>Meals you've eaten</h1>
     ${dayNav(date)}
     ${state.ratingNote ? `<p class="banner" id="rating-note">${esc(state.ratingNote)}</p>` : ""}
-    <p class="quiet">Each date keeps one plan. Tomorrow stays in the planner.</p>
+    <p class="quiet">Each date keeps one plan. Days ahead stay in the planner.</p>
     ${plans.length || date <= todayKey() ? body : host("notebook", "<p>Your eaten meals will gather here, one day at a time.</p>")}
     ${footer()}</main>`;
 }
@@ -1345,6 +1493,7 @@ function render() {
   else if (state.screen === "prefs") app.innerHTML = renderPrefs();
   else if (state.screen === "history") app.innerHTML = renderHistory();
   else if (state.screen === "planner") app.innerHTML = renderPlanner();
+  else if (state.screen === "ahead") app.innerHTML = renderAhead();
   else app.innerHTML = renderHome();
   if (scrollTo === "top") requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }));
   else if (scrollTo) {
@@ -1464,6 +1613,87 @@ function onClick(event) {
     render();
   }
   if (action === "shift-day") goDay(button.dataset.day);
+  if (action === "cal-page") {
+    const step = Number(button.dataset.step) || 0;
+    const next = (state.calendarPage || 0) + step;
+    const start = shiftDate(todayKey(), next * 7);
+    if (step < 0 && start < shiftDate(floorKey(), -6)) return;
+    if (step > 0 && start > horizonKey()) return;
+    state.calendarPage = next;
+    render();
+  }
+  if (action === "open-day") {
+    const date = button.dataset.date;
+    if (!date || date > horizonKey()) return;
+    showDate(date);
+    state.screen = "planner";
+    state.scrollTo = "top";
+    render();
+  }
+  if (action === "ahead") {
+    state.screen = "ahead";
+    state.aheadNote = "";
+    state.scrollTo = "top";
+    render();
+  }
+  if (action === "ahead-build") {
+    fillAhead(state.aheadDays || 3);
+    render();
+  }
+  if (action === "ahead-reset") {
+    state.aheadRows = null;
+    state.aheadPick = null;
+    state.aheadNote = "";
+    render();
+  }
+  if (action === "ahead-shuffle") {
+    if (!state.aheadRows) return;
+    shuffleAhead();
+    render();
+  }
+  if (action === "ahead-else") {
+    const row = (state.aheadRows || []).find((item) => item.date === button.dataset.date);
+    const slot = button.dataset.slot;
+    if (!row || row.saved || (slot !== "lunch" && slot !== "dinner")) return;
+    const other = slot === "lunch" ? row.dinner : row.lunch;
+    const meal = suggestMeal(state.meals, planningPreset(), state.mealWeights, aheadUsed({ date: row.date, slot }), other?.id || null);
+    if (!meal) {
+      state.aheadNote = "I don't have another meal that fits.";
+      render();
+      return;
+    }
+    row[slot] = meal;
+    if (slot === "lunch") row.keepLunch = false;
+    else row.keepDinner = false;
+    state.aheadNote = "";
+    render();
+  }
+  if (action === "ahead-choose") {
+    const same = state.aheadPick?.date === button.dataset.date && state.aheadPick?.slot === button.dataset.slot;
+    state.aheadPick = same ? null : { date: button.dataset.date, slot: button.dataset.slot };
+    state.aheadQuery = "";
+    state.scrollTo = same ? null : "#ahead-picker";
+    render();
+  }
+  if (action === "ahead-assign") {
+    const pick = state.aheadPick;
+    const row = pick && (state.aheadRows || []).find((item) => item.date === pick.date);
+    const meal = findMeal(Number(button.dataset.id));
+    if (!row || row.saved || !meal || isPork(meal)) return;
+    if (aheadUsed(pick).has(meal.id)) {
+      state.aheadNote = "That meal is already on another day.";
+      render();
+      return;
+    }
+    row[pick.slot] = meal;
+    if (pick.slot === "lunch") row.keepLunch = true;
+    else row.keepDinner = true;
+    state.aheadPick = null;
+    state.aheadQuery = "";
+    state.aheadNote = "";
+    render();
+  }
+  if (action === "ahead-save") saveAhead();
   if (action === "surprise") {
     if (planningBlocked()) return;
     const saved = planFor(focusKey());
@@ -1668,6 +1898,22 @@ function onInput(event) {
     const tick = document.querySelector('[data-tick="check-weight"]');
     if (tick) writeTick(tick, value);
   }
+  if (input.dataset.aheadDays) {
+    state.aheadDays = Math.min(14, Math.max(1, Math.round(Number(input.value))));
+    const tick = document.querySelector('[data-tick="ahead-days"]');
+    if (tick) writeTick(tick, state.aheadDays);
+    return;
+  }
+  if (input.id === "aheadSearch") {
+    state.aheadQuery = input.value;
+    const box = document.getElementById("ahead-picker");
+    const row = state.aheadPick && (state.aheadRows || []).find((item) => item.date === state.aheadPick.date);
+    if (box && row) {
+      const list = box.querySelector(".ahead-options");
+      if (list) list.innerHTML = aheadChoiceButtons();
+    }
+    return;
+  }
   if (input.id === "mealSearch") {
     state.search = input.value;
     const box = document.getElementById("mealResults");
@@ -1719,7 +1965,7 @@ function confirmDay() {
   const dinner = state.draft.dinner;
   if (!lunch || !dinner || lunch.id === dinner.id) return;
   const date = focusKey();
-  if (date < todayKey() || date > tomorrowKey() || planFor(date) || (date === todayKey() && todayHeld())) return;
+  if (date < todayKey() || date > horizonKey() || planFor(date) || (date === todayKey() && todayHeld())) return;
   const previous = state.plans.find((plan) => plan.date === date);
   const same = previous && previous.lunchId === lunch.id && previous.dinnerId === dinner.id;
   const plan = {
@@ -1757,7 +2003,7 @@ function unconfirmDay() {
 }
 
 function showDate(date) {
-  const next = date && date <= tomorrowKey() ? date : todayKey();
+  const next = date && date <= horizonKey() ? date : todayKey();
   state.focusDate = next;
   if (state.draftDay === next) return;
   const saved = planFor(next);
@@ -1860,7 +2106,7 @@ function finishDay() {
   const plan = planFor(focusKey());
   if (!plan) return;
   if (plan.date > todayKey()) {
-    state.ratingNote = "You can only rate tomorrow.";
+    state.ratingNote = "You can rate this day when it arrives.";
     state.scrollTo = "#rating-note";
     render();
     return;
@@ -1875,7 +2121,7 @@ function finishDay() {
 
 function saveRating(planDate, slot) {
   if (planDate > todayKey()) {
-    state.ratingNote = "You can only rate tomorrow.";
+    state.ratingNote = "You can rate this day when it arrives.";
     state.scrollTo = "#rating-note";
     render();
     return;
@@ -1896,6 +2142,42 @@ function saveRating(planDate, slot) {
   savePlans(state.plans);
   saveMealWeights(state.mealWeights);
   state.ratingNote = ratingWords(weight);
+  render();
+}
+
+function saveAhead() {
+  if (!state.aheadRows?.length) return;
+  const target = dayTarget(state.profile);
+  const presetName = activePreset().name;
+  const additions = [];
+  state.aheadRows.forEach((row) => {
+    if (row.saved || !row.lunch?.id || !row.dinner?.id || row.lunch.id === row.dinner.id) return;
+    if (row.date < todayKey() || row.date > horizonKey() || planFor(row.date)) return;
+    if (row.date === todayKey() && todayHeld()) return;
+    additions.push({
+      date: row.date,
+      lunchId: row.lunch.id,
+      dinnerId: row.dinner.id,
+      target,
+      presetName,
+      confirmedAt: new Date().toISOString(),
+      finishedAt: null,
+      ratings: { lunch: null, dinner: null },
+    });
+  });
+  if (!additions.length) {
+    state.aheadNote = "These days are already saved.";
+    render();
+    return;
+  }
+  state.plans = dedupePlans([...additions, ...state.plans]);
+  savePlans(state.plans);
+  state.aheadRows = null;
+  state.aheadPick = null;
+  state.aheadNote = "";
+  state.calendarPage = 0;
+  state.screen = "home";
+  state.scrollTo = "top";
   render();
 }
 
