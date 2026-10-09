@@ -179,6 +179,34 @@ function confirmedPlans() {
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 
+function csvCell(value) {
+  const text = String(value ?? "");
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function exportPlanCsv() {
+  const lines = [["Date", "Lunch Name", "Lunch Link", "Dinner Name", "Dinner Link"]];
+  confirmedPlans()
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .forEach((plan) => {
+      const lunch = findMeal(plan.lunchId);
+      const dinner = findMeal(plan.dinnerId);
+      lines.push([plan.date, lunch?.name || "", lunch?.url || "", dinner?.name || "", dinner?.url || ""]);
+    });
+  const csv = `\uFEFF${lines.map((line) => line.map(csvCell).join(",")).join("\r\n")}`;
+  const file = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "samoora-meal-plan.csv";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function dedupePlans(plans) {
   const map = new Map();
   plans.forEach((plan) => {
@@ -1215,6 +1243,7 @@ function renderHome() {
     <div class="row" style="margin-bottom:12px">
       <button class="primary" type="button" data-action="ahead">Plan ahead</button>
       ${todayHeld() ? "" : `<button class="ghost" type="button" data-action="planner" data-day="today">Plan today</button>`}
+      <button class="ghost" type="button" data-action="export-csv">To CSV</button>
     </div>
     ${calendarHTML()}
     ${footer()}</main>`;
@@ -1734,6 +1763,7 @@ function onClick(event) {
     state.scrollTo = "top";
     render();
   }
+  if (action === "export-csv") exportPlanCsv();
   if (action === "ahead") {
     state.screen = "ahead";
     state.aheadNote = "";
