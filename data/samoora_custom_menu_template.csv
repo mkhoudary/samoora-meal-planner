@@ -1,0 +1,10 @@
+Samoora | Custom Meal Menu,,,,,,,
+PERSONAL MENU TEMPLATE,,,,,,,
+"Add one meal per row below. Do not change the column names.",,,,,,,
+"Required fields: name, calories, protein, carbs, and fat.",,,,,,,
+"Optional fields: chef, categories, and cookunity_url. Leave them blank if unknown.",,,,,,,
+"Enter calories as a number. Enter protein, carbs, and fat in grams.",,,,,,,
+"categories: One simple category is enough, such as Chicken, Fish, or Vegetarian.",,,,,,,
+"cookunity_url: Paste the direct CookUnity meal URL, if available.",,,,,,,
+,,,,,,,
+name,chef,categories,cookunity_url,calories,protein,carbs,fat

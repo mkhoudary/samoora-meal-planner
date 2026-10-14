@@ -1,4 +1,4 @@
-import { loadMeals } from "./db.js";
+import { createCustomMenuDatabase, customMealKey, loadCustomMenuMeals, loadMeals, mapCustomMenuMeals } from "./db.js";
 import { fastingStatus, fastReachesTomorrow, formatRemaining } from "./fasting.js";
 import {
   dayTarget,
@@ -12,8 +12,12 @@ import {
 } from "./planner.js";
 import {
   LEVEL_LABELS,
+  loadCustomMenuBytes,
+  loadCustomMenuHistoryBytes,
   loadState,
   saveCheer,
+  saveCustomMenuBytes,
+  removeCustomMenuBytes,
   saveFasting,
   saveMealWeights,
   saveOnboarded,
@@ -59,6 +63,10 @@ const STAYS = "This page has no account and no server, so your numbers never lea
 
 const state = {
   meals: [],
+  catalog: [],
+  defaultMeals: [],
+  legacyMealAliases: new Map(),
+  ambiguousLegacyIds: new Set(),
   screen: "loading",
   onboardStep: 1,
   error: "",
@@ -87,6 +95,14 @@ const state = {
   aheadSheet: null,
   aheadSheetFocus: false,
   calendarPage: 0,
+  customMenuFile: null,
+  customMenuValidation: null,
+  customMenuRows: [],
+  customMenuSave: null,
+  customMenuRestore: null,
+  customMenuDownload: null,
+  customMenuRecovery: false,
+  customMenuActive: false,
 };
 
 const app = document.querySelector("#app");
@@ -191,8 +207,8 @@ function exportPlanCsv() {
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date))
     .forEach((plan) => {
-      const lunch = findMeal(plan.lunchId);
-      const dinner = findMeal(plan.dinnerId);
+      const lunch = mealReference(plan.lunchId);
+      const dinner = mealReference(plan.dinnerId);
       lines.push([plan.date, lunch?.name || "", lunch?.url || "", dinner?.name || "", dinner?.url || ""]);
     });
   const csv = `\uFEFF${lines.map((line) => line.map(csvCell).join(",")).join("\r\n")}`;
@@ -205,6 +221,276 @@ function exportPlanCsv() {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function downloadCsvText(csv, filename) {
+  const file = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadMenuTemplate() {
+  state.customMenuDownload = null;
+  render();
+  try {
+    const bytes = await loadCustomMenuBytes();
+    if (!bytes) {
+      const link = document.createElement("a");
+      link.href = asset("./data/samoora_custom_menu_template.csv");
+      link.download = "samoora_custom_menu_template.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
+
+    const response = await fetch(asset("./data/samoora_custom_menu_template.csv"));
+    if (!response.ok) throw new Error("The custom menu template could not be loaded.");
+    const template = await response.text();
+    const meals = await loadCustomMenuMeals(bytes);
+    const rows = meals.map((meal) => [
+      meal.name,
+      meal.chef,
+      meal.categories,
+      meal.url,
+      meal.calories,
+      meal.protein,
+      meal.carbs,
+      meal.fat,
+    ]);
+    const csv = `${template.trimEnd()}\r\n${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+    downloadCsvText(csv, "samoora_custom_menu.csv");
+  } catch (error) {
+    state.customMenuDownload = {
+      status: "error",
+      message: `The saved custom menu could not be downloaded: ${error instanceof Error ? error.message : "it could not be read."}`,
+    };
+    render();
+  }
+}
+
+const CUSTOM_MENU_COLUMNS = ["name", "chef", "categories", "cookunity_url", "calories", "protein", "carbs", "fat"];
+const CUSTOM_MENU_REQUIRED = ["name", "calories", "protein", "carbs", "fat"];
+
+function parseCsv(text) {
+  const rows = [];
+  let fields = [];
+  let field = "";
+  let quoted = false;
+  let line = 1;
+  let rowLine = 1;
+
+  const pushRow = () => {
+    rows.push({ fields, line: rowLine });
+    fields = [];
+    field = "";
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '"') {
+        if (text[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += char;
+        if (char === "\n") line += 1;
+      }
+      continue;
+    }
+    if (char === '"' && field === "") {
+      quoted = true;
+    } else if (char === ",") {
+      fields.push(field);
+      field = "";
+    } else if (char === "\n") {
+      fields.push(field);
+      pushRow();
+      line += 1;
+      rowLine = line;
+    } else if (char === "\r") {
+      fields.push(field);
+      if (text[index + 1] === "\n") index += 1;
+      pushRow();
+      line += 1;
+      rowLine = line;
+    } else {
+      field += char;
+    }
+  }
+
+  if (quoted) throw new Error(`Row ${rowLine}: quoted field is not closed.`);
+  if (field || fields.length) {
+    fields.push(field);
+    pushRow();
+  }
+  return rows;
+}
+
+function normalizedCsvHeader(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isBlankCsvRow(fields) {
+  return fields.every((value) => !String(value || "").trim());
+}
+
+function validCookUnityUrl(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && (url.hostname === "cookunity.com" || url.hostname.endsWith(".cookunity.com"));
+  } catch {
+    return false;
+  }
+}
+
+function validateCustomMenuCsv(text) {
+  const rows = parseCsv(text.replace(/^\uFEFF/, ""));
+  const headerIndex = rows.findIndex(({ fields }) => {
+    const headers = fields.map(normalizedCsvHeader);
+    return headers.includes("name") && headers.some((header) => CUSTOM_MENU_COLUMNS.includes(header));
+  });
+  if (headerIndex < 0) {
+    return { errors: ["No header row found. Include the expected columns, such as name, calories, protein, carbs, and fat."], meals: [] };
+  }
+
+  const header = rows[headerIndex];
+  const headers = header.fields.map(normalizedCsvHeader);
+  const errors = [];
+  const positions = new Map();
+  headers.forEach((name, index) => {
+    if (!name) return;
+    if (positions.has(name)) {
+      errors.push(`Row ${header.line}, column "${name}": duplicate column name.`);
+    } else {
+      positions.set(name, index);
+    }
+    if (!CUSTOM_MENU_COLUMNS.includes(name)) {
+      errors.push(`Row ${header.line}, column "${name}": unsupported column.`);
+    }
+  });
+  CUSTOM_MENU_REQUIRED.forEach((name) => {
+    if (!positions.has(name)) errors.push(`Row ${header.line}: missing required column "${name}".`);
+  });
+  if (errors.some((error) => error.includes("missing required column"))) return { errors, meals: [] };
+
+  const meals = [];
+  rows.slice(headerIndex + 1).forEach(({ fields, line }) => {
+    if (isBlankCsvRow(fields)) return;
+    if (fields.length !== headers.length) {
+      errors.push(`Row ${line}: expected ${headers.length} fields, found ${fields.length}.`);
+      return;
+    }
+    const valueFor = (name) => fields[positions.get(name)]?.trim() || "";
+    const name = valueFor("name");
+    let rowIsValid = true;
+
+    if (!name) {
+      errors.push(`Row ${line}, column "name": meal name cannot be empty.`);
+      rowIsValid = false;
+    }
+
+    const meal = {
+      name,
+      chef: valueFor("chef"),
+      categories: valueFor("categories"),
+      cookunity_url: valueFor("cookunity_url"),
+    };
+
+    ["calories", "protein", "carbs", "fat"].forEach((column) => {
+      const raw = valueFor(column);
+      const value = Number(raw);
+      
+      if (!raw || !Number.isFinite(value) || value < 0) {
+          errors.push(
+            `Row ${line}, column "${column}": expected a finite non-negative number; received "${raw}".`
+          );
+          rowIsValid = false;
+      }else{
+        meal[column] = value;
+      }
+    });
+
+    const url = meal.cookunity_url;
+
+    if (url && !validCookUnityUrl(url)) {
+      errors.push(
+        `Row ${line}, column "cookunity_url": expected an HTTP or HTTPS CookUnity URL; received "${url}".`
+      );
+      rowIsValid = false;
+    }
+
+    if (rowIsValid) {
+      meals.push(meal);
+    }
+
+  });
+  if (!meals.length) errors.push("No valid meal rows found. Add at least one meal with a name and valid nutrition values.");
+  return { errors, meals };
+}
+
+async function validateCustomMenuFile() {
+  const file = state.customMenuFile;
+  if (!file) return;
+  try {
+    const result = validateCustomMenuCsv(await file.text());
+    if (state.customMenuFile !== file) return;
+
+    state.customMenuRows = result.errors.length
+      ? []
+      : result.meals;
+
+    state.customMenuValidation = result.errors.length
+      ? { ok: false, errors: result.errors }
+      : { ok: true, count: result.meals.length };
+  } catch (error) {
+    if (state.customMenuFile !== file) return;
+    state.customMenuRows = [];
+    state.customMenuValidation = {
+      ok: false,
+      errors: [error instanceof Error ? error.message : "The CSV could not be read or parsed."],
+    };
+  }
+  render();
+}
+
+async function saveCustomMenu() {
+  if (state.customMenuSave?.status === "saving") return;
+  if (!state.customMenuValidation?.ok || !state.customMenuRows.length) return;
+  const file = state.customMenuFile;
+  const meals = state.customMenuRows;
+  state.customMenuSave = { status: "saving", message: "Saving your menu..." };
+  render();
+  try {
+    const mappedMeals = mapCustomMenuMeals(meals, catalogIds(), catalogMealIds());
+    const bytes = await createCustomMenuDatabase(mappedMeals);
+    await saveCustomMenuBytes(bytes);
+    if (state.customMenuFile !== file) return;
+    const activeMeals = activateCustomMenu(mappedMeals);
+    state.customMenuActive = true;
+    state.customMenuSave = {
+      status: "success",
+      message: `Saved ${activeMeals.length} meal${activeMeals.length === 1 ? "" : "s"}.`,
+    };
+  } catch (error) {
+    if (state.customMenuFile !== file) return;
+    state.customMenuSave = {
+      status: "error",
+      message: error instanceof Error ? error.message : "The custom menu could not be saved.",
+    };
+  }
+  render();
 }
 
 function dedupePlans(plans) {
@@ -230,7 +516,83 @@ function activePreset() {
 }
 
 function findMeal(id) {
-  return state.meals.find((meal) => meal.id === id) || null;
+  if (state.ambiguousLegacyIds.has(id)) return null;
+  return state.catalog.find((meal) => meal.id === id) || state.legacyMealAliases.get(id) || null;
+}
+
+function mealReference(id) {
+  if (state.ambiguousLegacyIds.has(id)) return { id, unavailable: true };
+  return findMeal(id);
+}
+
+function catalogIds() {
+  return state.catalog.map((meal) => meal.id);
+}
+
+function catalogMealIds() {
+  return new Map(
+    state.catalog
+      .filter((meal) => meal.id < 0)
+      .map((meal) => [meal.custom_key || customMealKey(meal), meal.id]),
+  );
+}
+
+function mapCustomRows(rows) {
+  const legacyIds = rows
+    .map((meal) => meal.legacy_id)
+    .filter((id) => Number.isInteger(id));
+  const packagedIds = new Set(state.defaultMeals.map((meal) => meal.id));
+  legacyIds.filter((id) => packagedIds.has(id)).forEach((id) => state.ambiguousLegacyIds.add(id));
+  const ambiguousId = legacyIds.find((id) => packagedIds.has(id));
+  if (ambiguousId != null) {
+    throw new Error(`Legacy custom meal ID ${ambiguousId} conflicts with the packaged menu; the saved menu was not activated.`);
+  }
+  const mapped = mapCustomMenuMeals(rows, catalogIds(), catalogMealIds());
+  mapped.forEach((meal, index) => {
+    const legacyId = rows[index]?.legacy_id;
+    if (Number.isInteger(legacyId) && !state.legacyMealAliases.has(legacyId)) {
+      state.legacyMealAliases.set(legacyId, meal);
+    }
+  });
+  return mapped;
+}
+
+function activateCustomMenu(rows) {
+  const meals = mapCustomRows(rows);
+  if (!meals.length) throw new Error("The saved custom menu has no meals.");
+  state.meals = meals;
+  const customIds = new Set(meals.map((meal) => meal.id));
+  const previousCustom = state.catalog.filter((meal) => meal.id < 0 && !customIds.has(meal.id));
+  state.catalog = [...state.defaultMeals, ...previousCustom, ...meals];
+  return meals;
+}
+
+function activateDefaultMenu() {
+  state.meals = state.defaultMeals;
+  state.customMenuActive = false;
+}
+
+async function removeCustomMenu() {
+  if (!state.customMenuActive) return;
+  if (!globalThis.confirm("Remove the custom menu and restore the default menu?")) return;
+  state.customMenuSave = { status: "saving", message: "Restoring the default menu..." };
+  render();
+  try {
+    const removed = await removeCustomMenuBytes();
+    if (!removed) throw new Error("No active custom menu was found.");
+    activateDefaultMenu();
+    state.customMenuSave = {
+      status: "success",
+      message: "The default menu is active. Your custom meals remain available in history.",
+    };
+    state.customMenuRestore = null;
+  } catch (error) {
+    state.customMenuSave = {
+      status: "error",
+      message: error instanceof Error ? error.message : "The custom menu could not be removed.",
+    };
+  }
+  render();
 }
 
 function tenth(value) {
@@ -914,6 +1276,9 @@ function mealCard(meal, slot, { rating = undefined, scope = "", lockable = false
   if (!meal) {
     return `<article class="meal">${slotRow}<p class="quiet">Nothing here yet.</p></article>`;
   }
+  if (meal.unavailable) {
+    return `<article class="meal">${slotRow}<p class="warn">Meal unavailable: this saved ID is ambiguous because it conflicts with the packaged menu.</p></article>`;
+  }
   const prefix = `${scope}${slot.toLowerCase()}`;
   const pills = String(meal.categories || "").split(";").map((item) => item.trim()).filter(Boolean).slice(0, 6);
   return `<article class="meal">${slotRow}<h3>${esc(meal.name)}</h3>
@@ -1026,14 +1391,14 @@ function ratingCard(plan, { heading = true } = {}) {
   const block = (slot, meal) => {
     if (plan.ratings?.[slot]?.overall) {
       const weight = state.mealWeights[meal?.id] || 1;
-      return `<p><strong>${esc(meal?.name || slot)}</strong> is saved. ${esc(ratingWords(weight))}</p>`;
+      return `<p><strong>${esc(meal?.unavailable ? "Ambiguous saved meal" : meal?.name || slot)}</strong> is saved. ${esc(ratingWords(weight))}</p>`;
     }
     const draft = state.ratingDraft[plan.date][slot] || {};
     const ready = draft.overall && draft.delicious && draft.full && draft.again;
     const preview = ready
       ? ratingWords(weightFromRating(draft))
       : "Your stars tell me what to offer next. Higher brings a meal forward. Lower tucks it back.";
-    return `<div><h3>${esc(meal?.name || slot)}</h3>
+    return `<div><h3>${esc(meal?.unavailable ? "Ambiguous saved meal" : meal?.name || slot)}</h3>
       <p>How was it?</p>${stars(plan.date, slot, "overall", draft.overall)}
       <p>How delicious</p>${stars(plan.date, slot, "delicious", draft.delicious)}
       <p>How full did it make you</p>${stars(plan.date, slot, "full", draft.full)}
@@ -1120,28 +1485,30 @@ function weightScreen({ weekly = false } = {}) {
 
 function renderOnboard() {
   const step = state.onboardStep;
-  const titles = ["Let's start with you", "Your fasting clock", "What do you feel like eating?"];
-  const poses = ["privacy", "fasting", "notebook"];
+  const titles = ["Let's start with you", "Your fasting clock", "What do you feel like eating?", "Your Menu"];
+  const poses = ["privacy", "fasting", "notebook", "notebook"];
   const bubbles = [
     privacyBlock(),
     `<p>The clock is yours. You can change it any day.</p>${privacyBlock()}`,
     `<p>Set the day the way you like it. Calories stay under a whole number, and protein, carbs, and fat each have a range. You can change this whenever you want.</p>`,
+    "<p>You can add your own meals whenever you like. This step is optional, and you can skip it for now.</p>",
   ];
   const brand = step === 1
     ? `<div class="hero-logo"><img src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"><p class="love">Made with Love by Mohammed</p></div>`
     : `<header class="top"><img class="logo" src="${asset("./assets/logo.png")}" alt="Samoora Meal Planner"></header>`;
   return `${brand}
-    <main class="wrap"><div class="steps">${[1, 2, 3].map((item) => `<span class="${item <= step ? "on" : ""}"></span>`).join("")}</div>
+    <main class="wrap"><div class="steps">${[1, 2, 3, 4].map((item) => `<span class="${item <= step ? "on" : ""}"></span>`).join("")}</div>
     <h1>${titles[step - 1]}</h1>
     ${host(poses[step - 1], bubbles[step - 1])}
     <div id="step-focus">
     ${step === 1 ? bodyFields({ weight: true }) : ""}
     ${step === 2 ? fastingFields() : ""}
     ${step === 3 ? presetEditor() : ""}
+    ${step === 4 ? renderMenuManager() : ""}
     </div>
     <div class="row" style="margin-top:16px">
       ${step > 1 ? `<button class="ghost" type="button" data-action="back">Back</button>` : ""}
-      <button class="primary" type="button" data-action="next">${step === 3 ? "Save and start" : "Continue"}</button>
+      <button class="primary" type="button" data-action="next">${step === 4 ? "Save and start" : "Continue"}</button>
     </div>
     ${footer()}</main>`;
 }
@@ -1209,14 +1576,14 @@ function calendarHTML() {
         const today = date === todayKey();
         const past = date < todayKey();
         const far = date > horizonKey();
-        const lunch = plan ? findMeal(plan.lunchId) : null;
-        const dinner = plan ? findMeal(plan.dinnerId) : null;
+        const lunch = plan ? mealReference(plan.lunchId) : null;
+        const dinner = plan ? mealReference(plan.dinnerId) : null;
         return `<button class="cal-day${today ? " is-today" : ""}${past ? " is-past" : ""}${plan ? " is-planned" : ""}" type="button" data-action="open-day" data-date="${esc(date)}" ${far ? "disabled" : ""}>
           <span class="cal-kicker">${today ? "Today" : esc(bits.dow)}</span>
           <strong>${bits.num}</strong>
           <span class="cal-pair">
-            <span><small>Lunch</small>${lunch ? esc(lunch.name) : "Open"}</span>
-            <span><small>Dinner</small>${dinner ? esc(dinner.name) : "Open"}</span>
+            <span><small>Lunch</small>${lunch?.unavailable ? "Ambiguous meal" : lunch ? esc(lunch.name) : "Open"}</span>
+            <span><small>Dinner</small>${dinner?.unavailable ? "Ambiguous meal" : dinner ? esc(dinner.name) : "Open"}</span>
           </span>
         </button>`;
       }).join("")}
@@ -1268,8 +1635,8 @@ function fillAhead(count) {
   for (let index = 0; index < days && date <= horizonKey(); index += 1) {
     const saved = planFor(date);
     if (saved) {
-      const lunch = findMeal(saved.lunchId);
-      const dinner = findMeal(saved.dinnerId);
+      const lunch = mealReference(saved.lunchId);
+      const dinner = mealReference(saved.dinnerId);
       if (lunch?.id) kept.add(lunch.id);
       if (dinner?.id) kept.add(dinner.id);
       rows.push({ date, lunch, dinner, saved: true, keepLunch: true, keepDinner: true });
@@ -1562,7 +1929,7 @@ function historyDay(plan, { open = true } = {}) {
   return `<section class="card history-day" id="day-${esc(plan.date)}"><h2>${esc(named || prettyDate(plan.date))}</h2>
     ${named ? `<p class="quiet">${esc(prettyDate(plan.date))}</p>` : ""}
     ${future ? `<p class="warn" id="rating-note">You can rate this day when it arrives.</p>` : ""}
-    <div class="meals">${mealCard(findMeal(plan.lunchId), "Lunch", { ...(lunchRating ? { rating: lunchRating } : {}), scope: `${plan.date}-` })}${mealCard(findMeal(plan.dinnerId), "Dinner", { ...(dinnerRating ? { rating: dinnerRating } : {}), scope: `${plan.date}-` })}</div>
+    <div class="meals">${mealCard(mealReference(plan.lunchId), "Lunch", { ...(lunchRating ? { rating: lunchRating } : {}), scope: `${plan.date}-` })}${mealCard(mealReference(plan.dinnerId), "Dinner", { ...(dinnerRating ? { rating: dinnerRating } : {}), scope: `${plan.date}-` })}</div>
     ${needsRating ? ratingCard(plan, { heading: false }) : ""}
   </section>`;
 }
@@ -1584,6 +1951,42 @@ function renderHistory() {
     ${footer()}</main>`;
 }
 
+function renderMenuManager() {
+  const filename = state.customMenuFile?.name || "No file selected.";
+  const validation = state.customMenuValidation;
+  const save = state.customMenuSave;
+  const saving = save?.status === "saving";
+  const restore = state.customMenuRestore;
+  const feedback = validation?.ok
+    ? `<p class="quiet" aria-live="polite">Validated ${validation.count} meal row${validation.count === 1 ? "" : "s"}.</p>`
+    : validation
+      ? `<div class="warn" aria-live="polite"><p>We found a few things to fix:</p><ul>${validation.errors.map((error) => `<li>${esc(error)}</li>`).join("")}</ul></div>`
+      : "";
+  return `<section class="card">
+    <p class="quiet">Download the CSV template, add your meals, then select your completed file here.</p>
+    <div class="row">
+      <button class="primary" type="button" data-action="download-menu-template">${state.customMenuRecovery ? "Download saved menu CSV" : "Download template"}</button>
+      <button class="ghost" type="button" data-action="upload-menu" ${saving ? "disabled" : ""}>Upload CSV</button>
+      <input id="customMenuFile" type="file" accept=".csv,text/csv" ${saving ? "disabled" : ""} hidden>
+    </div>
+    <p class="quiet" aria-live="polite">${esc(filename)}</p>
+    ${feedback}
+    ${save?.status === "saving" ? `<p class="quiet" aria-live="polite">${esc(save.message)}</p>` : ""}
+    ${validation?.ok && state.customMenuRows.length
+      ? `<button class="primary" type="button" data-action="save-custom-menu" ${saving ? "disabled" : ""}>${saving ? "Saving..." : "Use this menu"}</button>`
+      : ""}
+    ${state.customMenuActive && !saving
+      ? `<button class="ghost" type="button" data-action="remove-custom-menu">Remove custom menu</button>`
+      : ""}
+    ${save?.status === "success" ? `<p class="quiet" aria-live="polite">${esc(save.message)}</p>` : ""}
+    ${save?.status === "error" ? `<p class="warn" aria-live="polite">${esc(save.message)}</p>` : ""}
+    ${restore?.status === "success" ? `<p class="quiet" aria-live="polite">${esc(restore.message)}</p>` : ""}
+    ${restore?.status === "error" ? `<p class="warn" aria-live="polite">${esc(restore.message)}</p>` : ""}
+    ${state.customMenuRecovery ? `<p class="quiet">After downloading, upload the CSV above to save the menu with safe custom IDs. Existing plans are not changed automatically.</p>` : ""}
+    ${state.customMenuDownload?.status === "error" ? `<p class="warn" aria-live="polite">${esc(state.customMenuDownload.message)}</p>` : ""}
+  </section>`;
+}
+
 function renderPrefs() {
   return `${header()}<main class="wrap">${backBar()}<h1>Preferences</h1>
     ${host("notebook", "<p>Change any of this. It saves as you go, and it stays on this device.</p>")}
@@ -1594,6 +1997,7 @@ function renderPrefs() {
     </div>
     <h2 style="margin-top:18px">Presets</h2>
     ${presetEditor()}
+    <h2 style="margin-top:18px">Your Menu</h2>${renderMenuManager()}
     ${footer()}</main>`;
 }
 
@@ -1721,6 +2125,10 @@ function onClick(event) {
     render();
   }
   if (action === "next") continueOnboard();
+  if (action === "download-menu-template") downloadMenuTemplate();
+  if (action === "upload-menu") document.getElementById("customMenuFile")?.click();
+  if (action === "save-custom-menu") saveCustomMenu();
+  if (action === "remove-custom-menu") removeCustomMenu();
   if (action === "fast-on") {
     state.fasting.on = button.dataset.value === "1";
     render();
@@ -2129,8 +2537,13 @@ function continueOnboard() {
     state.scrollTo = "#step-focus";
     return render();
   }
-  clampCalMax();
-  savePresets(state.presets, state.activePresetId);
+  if (state.onboardStep === 3) {
+    clampCalMax();
+    savePresets(state.presets, state.activePresetId);
+    state.onboardStep = 4;
+    state.scrollTo = "#step-focus";
+    return render();
+  }
   saveOnboarded(true);
   state.onboarded = true;
   state.screen = "planner";
@@ -2195,8 +2608,8 @@ function showDate(date) {
   state.dayNote = "";
   state.surpriseSeen = new Set();
   state.draft = {
-    lunch: saved ? findMeal(saved.lunchId) : null,
-    dinner: saved ? findMeal(saved.dinnerId) : null,
+    lunch: saved ? mealReference(saved.lunchId) : null,
+    dinner: saved ? mealReference(saved.dinnerId) : null,
     relaxed: false,
     error: "",
   };
@@ -2441,8 +2854,8 @@ function restoreToday() {
   if (!saved) return;
   state.draftDay = date;
   state.draft = {
-    lunch: findMeal(saved.lunchId),
-    dinner: findMeal(saved.dinnerId),
+    lunch: mealReference(saved.lunchId),
+    dinner: mealReference(saved.dinnerId),
     relaxed: false,
     error: "",
   };
@@ -2453,8 +2866,8 @@ function expireDraft() {
   if (!state.draftDay || state.draftDay === live) return;
   const saved = state.meals.length ? planFor(live) : null;
   state.draft = {
-    lunch: saved ? findMeal(saved.lunchId) : null,
-    dinner: saved ? findMeal(saved.dinnerId) : null,
+    lunch: saved ? mealReference(saved.lunchId) : null,
+    dinner: saved ? mealReference(saved.dinnerId) : null,
     relaxed: false,
     error: "",
   };
@@ -2489,6 +2902,54 @@ async function boot() {
     }
     render();
     state.meals = await loadMeals();
+    state.defaultMeals = state.meals;
+    state.catalog = state.meals;
+    state.customMenuActive = false;
+    try {
+      const historyBytes = await loadCustomMenuHistoryBytes();
+      for (const bytes of historyBytes) {
+        const historyMeals = await loadCustomMenuMeals(bytes);
+        const mapped = mapCustomRows(historyMeals);
+        const existingIds = new Set(state.catalog.map((meal) => meal.id));
+        state.catalog = [...state.catalog, ...mapped.filter((meal) => !existingIds.has(meal.id))];
+      }
+    } catch (error) {
+      state.customMenuRestore = {
+        status: "error",
+        message: `Saved custom meal history could not be restored: ${error instanceof Error ? error.message : "the database is invalid."}`,
+      };
+    }
+    try {
+      const savedCustomMenuBytes = await loadCustomMenuBytes();
+      if (savedCustomMenuBytes) {
+        const savedMeals = await loadCustomMenuMeals(savedCustomMenuBytes);
+        const activeMeals = activateCustomMenu(savedMeals);
+        if (savedMeals.some((meal) => Number.isInteger(meal.legacy_id))) {
+          const migratedBytes = await createCustomMenuDatabase(activeMeals);
+          await saveCustomMenuBytes(migratedBytes);
+        }
+        state.customMenuActive = true;
+        state.customMenuRestore = {
+          status: "success",
+          message: `Saved menu: ${activeMeals.length} meal${activeMeals.length === 1 ? "" : "s"} on this device.`,
+        };
+      }
+      if (!state.customMenuActive && state.customMenuRestore?.status !== "error") {
+        state.customMenuRestore = {
+          status: "success",
+          message: "The default menu is active.",
+        };
+      }
+    } catch (error) {
+      const legacyConflict = error instanceof Error && error.message.startsWith("Legacy custom meal ID");
+      state.customMenuRestore = {
+        status: "error",
+        message: legacyConflict
+          ? `${error.message} Your saved menu was kept safely. Download the saved menu CSV, then upload that CSV to convert it to the current format.`
+          : `The saved custom menu could not be restored: ${error instanceof Error ? error.message : "the database is invalid."}`,
+      };
+      state.customMenuRecovery = legacyConflict;
+    }
     restoreToday();
     state.scrollTo = "top";
     render();
@@ -2522,10 +2983,28 @@ async function boot() {
 
 app.addEventListener("click", onClick);
 app.addEventListener("input", onInput);
-app.addEventListener("change", (event) => {
+app.addEventListener("change",  (event) => {
   const input = event.target;
-  if (input.dataset.fastHours || input.dataset.window || input.dataset.level) render();
+
+  if (input.id === "customMenuFile") {
+    if (state.customMenuSave?.status === "saving") return;
+    state.customMenuFile = input.files?.[0] || null;
+    state.customMenuRecovery = false;
+    state.customMenuRows = [];
+    state.customMenuValidation = null;
+    state.customMenuSave = null;
+    state.customMenuRestore = null;
+    render();
+    validateCustomMenuFile();
+    return;
+  }
+
+  if (input.dataset.fastHours || input.dataset.window || input.dataset.level) {
+    render();
+  }
 });
+
+
 app.addEventListener("pointerdown", (event) => {
   const knob = event.target.closest(".knob");
   if (!knob) return;
